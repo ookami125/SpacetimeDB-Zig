@@ -1,0 +1,4 @@
+.zig-cache/
+csharp-reference/
+rust-reference/
+zig-out/
