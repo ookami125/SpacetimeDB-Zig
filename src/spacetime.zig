@@ -106,3 +106,96 @@ pub fn parse_reducers(root: type) []const RawReducerDefV9 {
 
     return reducers;
 }
+
+pub fn Reducer(comptime func: anytype) type {
+    const @"spacetime_10.0__reducer_" = struct {
+        name: ?[]const u8 = null,
+        func: @TypeOf(func) = func,
+        lifecycle: ?Lifecycle = null,
+    };
+    return @"spacetime_10.0__reducer_";
+}
+
+pub fn Table(comptime table: anytype) type {
+    _ = table;
+    const @"spacetime_10.0__table_" = struct {
+        name: ?[]const u8 = null,
+        table_type: TableType = .User,
+        table_access: TableAccess = .Private,
+    };
+    return @"spacetime_10.0__table_";
+}
+
+pub fn compile(comptime module : anytype) RawModuleDefV9 {
+    var def : RawModuleDefV9 = undefined;
+    _ = &def;
+
+    //def.reducers = def.reducers ++ &[_]RawReducerDefV9{};
+    var tables: []const RawTableDefV9 = &[_]RawTableDefV9{};
+    var reducers: []const RawReducerDefV9 = &[_]RawReducerDefV9{};
+
+    inline for(std.meta.fields(@TypeOf(module))) |field| {
+        const name: []const u8 = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*.name orelse field.name;
+        if( std.mem.endsWith(u8, @typeName(field.type), "spacetime_10.0__table_")) {
+            const table_type: TableType = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*.table_type;
+            const table_access: TableAccess = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*.table_access;
+            tables = tables ++ &[_]RawTableDefV9{
+                .{
+                    .name = name,
+                    .product_type_ref = .{ .inner = 0, },
+                    .primary_key = &[_]u16{},
+                    .indexes = &[_]RawIndexDefV9{},
+                    .constraints = &[_]RawConstraintDefV9{},
+                    .sequences = &[_]RawSequenceDefV9{},
+                    .schedule = null,
+                    .table_type = table_type,
+                    .table_access = table_access,
+                }
+            };
+            continue;
+        }
+        if( std.mem.endsWith(u8, @typeName(field.type), "spacetime_10.0__reducer_")) {
+            const lifecycle: ?Lifecycle = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*.lifecycle;
+            reducers = reducers ++ &[_]RawReducerDefV9{
+                .{
+                    .name = name,
+                    .params = .{ .elements = &[_]ProductTypeElement{} },
+                    .lifecycle = lifecycle,
+                },
+            };
+            continue;
+        }
+        @compileLog(.{ field });
+    }
+
+    return .{
+        .typespace = .{
+            .types = &[_]AlgebraicType{
+                .{
+                    .Product = .{
+                        .elements = &[_]ProductTypeElement{
+                            .{
+                                .name = "name",
+                                .algebraic_type = .String,
+                            }
+                        }
+                    }
+                },
+            },
+        },
+        .tables = tables,
+        .reducers = reducers,
+        .types = &[_]RawTypeDefV9{
+            .{
+                .name = .{
+                    .scope = &[_][]u8{},
+                    .name = "Person"
+                },
+                .ty = .{ .inner = 0, },
+                .custom_ordering = true,
+            }
+        },
+        .misc_exports = &[_]RawMiscModuleExportV9{},
+        .row_level_security = &[_]RawRowLevelSecurityDefV9{},
+    };
+}

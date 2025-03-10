@@ -126,6 +126,9 @@ pub const Lifecycle = enum {
 
 pub const ReducerContext = struct {
     indentity: u256,
+    timestamp: u64,
+    connection_id: u128,
+
 };
 
 pub const ReducerFn = fn(*ReducerContext) void;

@@ -1,88 +1,38 @@
 const std = @import("std");
 const spacetime = @import("spacetime.zig");
 
-const reducers = spacetime.parse_reducers(@This());
-
 pub fn print(fmt: []const u8) void {
     spacetime.console_log(2, null, 0, null, 0, 0, fmt.ptr, fmt.len);
 }
 
-const moduleDef: spacetime.RawModuleDefV9 = .{
-    .typespace = .{
-        .types = &[_]spacetime.AlgebraicType{
-            .{
-                .Product = .{
-                    .elements = &[_]spacetime.ProductTypeElement{
-                        .{
-                            .name = "name",
-                            .algebraic_type = .String,
-                        }
-                    }
-                }
-            },
-        },
-    },
-    .tables = &[_]spacetime.RawTableDefV9{
-        .{
-            .name = "person",
-            .product_type_ref = .{ .inner = 0, },
-            .primary_key = &[_]u16{},
-            .indexes = &[_]spacetime.RawIndexDefV9{},
-            .constraints = &[_]spacetime.RawConstraintDefV9{},
-            .sequences = &[_]spacetime.RawSequenceDefV9{},
-            .schedule = null,
-            .table_type = .User,
-            .table_access = .Private,
-        }
-    },
-    .reducers = reducers,
-        //&[_]spacetime.RawReducerDefV9{
-        //.{
-        //    .name = "add",
-        //    .params = .{
-        //        .elements = &[_]spacetime.ProductTypeElement{
-        //            .{
-        //                .name = "name",
-        //                .algebraic_type = .String,
-        //            }
-        //        }
-        //    },
-        //    .lifecycle = null,
-        //},
-        //.{
-        //    .name = "identity_connected",
-        //    .params = .{ .elements = &[_]spacetime.ProductTypeElement{} },
-        //    .lifecycle = .OnConnect,
-        //},
-        //.{
-        //    .name = "identity_disconnected",
-        //    .params = .{ .elements = &[_]spacetime.ProductTypeElement{} },
-        //    .lifecycle = .OnDisconnect,
-        //},
-        //.{
-        //    .name = "init",
-        //    .params = .{ .elements = &[_]spacetime.ProductTypeElement{} },
-        //    .lifecycle = .Init,
-        //},
-        //.{
-        //    .name = "say_hello",
-        //    .params = .{ .elements = &[_]spacetime.ProductTypeElement{} },
-        //    .lifecycle = null,
-        //}
-    //},
-    .types = &[_]spacetime.RawTypeDefV9{
-        .{
-            .name = .{
-                .scope = &[_][]u8{},
-                .name = "Person"
-            },
-            .ty = .{ .inner = 0, },
-            .custom_ordering = true,
-        }
-    },
-    .misc_exports = &[_]spacetime.RawMiscModuleExportV9{},
-    .row_level_security = &[_]spacetime.RawRowLevelSecurityDefV9{},
+const moduleDef = .{
+    .Person = spacetime.Table(Person){ .name = "person" },
+    .Init = spacetime.Reducer(Init){ .lifecycle = .Init },
+    .OnConnect = spacetime.Reducer(OnConnect){ .lifecycle = .OnConnect },
+    .OnDisconnect = spacetime.Reducer(OnDisconnect){ .lifecycle = .OnDisconnect },
+    .add = spacetime.Reducer(add){},
+    .say_hello = spacetime.Reducer(say_hello){},
 };
+
+pub fn callReducer(comptime mdef: anytype, id: usize, args: anytype) void {
+    comptime var i = 0;
+    inline for(std.meta.fields(@TypeOf(mdef))) |field| {
+        if( comptime std.mem.endsWith(u8, @typeName(field.type), "spacetime_10.0__reducer_")) {
+            if(id == i) {
+                const func = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*.func;
+                if(std.meta.fields(@TypeOf(args)).len == @typeInfo(@TypeOf(func)).@"fn".params.len) {
+                    return @call(.auto, func, args);
+                }
+            
+                const name: []const u8 = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*.name orelse field.name;
+                var buf: [128]u8 = undefined;
+                print(std.fmt.bufPrint(&buf, "invalid number of args passed to {s}, expected {} got {}", .{name, @typeInfo(@TypeOf(func)).@"fn".params.len, std.meta.fields(@TypeOf(args)).len}) catch "!!!Error while printing last error!!!");
+                @panic("invalid number of args passed to func");
+            }
+            i += 1;
+        }
+    }
+}
 
 export fn __describe_module__(description: spacetime.BytesSink) void {
     const allocator = std.heap.wasm_allocator;
@@ -91,7 +41,7 @@ export fn __describe_module__(description: spacetime.BytesSink) void {
     var moduleDefBytes = std.ArrayList(u8).init(allocator);
     defer moduleDefBytes.deinit();
 
-    spacetime.serialize_module(&moduleDefBytes, moduleDef) catch {
+    spacetime.serialize_module(&moduleDefBytes, comptime spacetime.compile(moduleDef)) catch {
         print("Allocator Error: Cannot continue!");
         @panic("Allocator Error: Cannot continue!");
     };
@@ -111,18 +61,26 @@ export fn __call_reducer__(
     args: spacetime.BytesSource,
     err: spacetime.BytesSink,
 ) i16 {
-    const allocator = std.heap.wasm_allocator;
+    //const allocator = std.heap.wasm_allocator;
+    _ = args;
+    _ = err;
 
-    print(std.fmt.allocPrint(allocator, "id: {}", .{id}) catch "id: err");
-    print(std.fmt.allocPrint(allocator, "sender_0: {}", .{sender_0}) catch "sender_0: err");
-    print(std.fmt.allocPrint(allocator, "sender_1: {}", .{sender_1}) catch "sender_1: err");
-    print(std.fmt.allocPrint(allocator, "sender_2: {}", .{sender_2}) catch "sender_2: err");
-    print(std.fmt.allocPrint(allocator, "sender_3: {}", .{sender_3}) catch "sender_3: err");
-    print(std.fmt.allocPrint(allocator, "conn_id_0: {}", .{conn_id_0}) catch "conn_id_0: err");
-    print(std.fmt.allocPrint(allocator, "conn_id_1: {}", .{conn_id_1}) catch "conn_id_1: err");
-    print(std.fmt.allocPrint(allocator, "timestamp: {}", .{timestamp}) catch "timestamp: err");
-    print(std.fmt.allocPrint(allocator, "args: {}", .{args}) catch "args: err");
-    print(std.fmt.allocPrint(allocator, "err: {}", .{err}) catch "err: err");
+    var ctx: spacetime.ReducerContext = .{
+        .indentity = std.mem.bytesAsValue(u256, std.mem.sliceAsBytes(&[_]u64{ sender_0, sender_1, sender_2, sender_3})).*,
+        .timestamp = timestamp,
+        .connection_id  = std.mem.bytesAsValue(u128, std.mem.sliceAsBytes(&[_]u64{ conn_id_0, conn_id_1})).*,
+    };
+
+    switch(id) {
+        0...2, 4 => {
+            callReducer(moduleDef, id, .{ &ctx });
+        },
+        3 => {
+            callReducer(moduleDef, id, .{ &ctx, "blah" });
+        },
+        else => unreachable,
+    } 
+
 
     return 0;
 }
@@ -149,10 +107,11 @@ pub fn OnDisconnect(_ctx: *spacetime.ReducerContext) void {
     print("Hello, OnDisconnect!");
 }
 
-pub fn add(_ctx: *spacetime.ReducerContext, name: []u8) void {
+pub fn add(_ctx: *spacetime.ReducerContext, name: []const u8) void {
     _ = _ctx;
-    _ = name;
     //ctx.db.person().insert(Person { name });
+    var buf: [128]u8 = undefined;
+    print(std.fmt.bufPrint(&buf, "Hello, add({s})!", .{ name }) catch "[add] Error: name to long");
 }
 
 //#[spacetimedb::reducer]
