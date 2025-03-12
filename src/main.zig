@@ -5,12 +5,15 @@ pub fn print(fmt: []const u8) void {
     spacetime.console_log(2, null, 0, null, 0, 0, fmt.ptr, fmt.len);
 }
 
-const moduleDef = .{
+const moduleTablesDef = .{
     .Person = spacetime.Table(Person){ .name = "person" },
+};
+
+const moduleReducersDef = .{
     .Init = spacetime.Reducer(Init){ .lifecycle = .Init },
     .OnConnect = spacetime.Reducer(OnConnect){ .lifecycle = .OnConnect },
     .OnDisconnect = spacetime.Reducer(OnDisconnect){ .lifecycle = .OnDisconnect },
-    .add = spacetime.Reducer(add){},
+    .add = spacetime.Reducer(add){ .param_names = &[_][]const u8{ "name" }},
     .say_hello = spacetime.Reducer(say_hello){},
 };
 
@@ -41,12 +44,26 @@ export fn __describe_module__(description: spacetime.BytesSink) void {
     var moduleDefBytes = std.ArrayList(u8).init(allocator);
     defer moduleDefBytes.deinit();
 
-    spacetime.serialize_module(&moduleDefBytes, comptime spacetime.compile(moduleDef)) catch {
+    spacetime.serialize_module(&moduleDefBytes, comptime spacetime.compile(moduleTablesDef, moduleReducersDef) catch |err| {
+        var buf: [1024]u8 = undefined;
+        const fmterr = std.fmt.bufPrint(&buf, "Error: {}", .{err}) catch {
+            @compileError("ERROR2: No Space Left! Expand error buffer size!");
+        };
+        @compileError(fmterr);
+    }) catch {
         print("Allocator Error: Cannot continue!");
         @panic("Allocator Error: Cannot continue!");
     };
 
     spacetime.write_to_sink(description, moduleDefBytes.items);
+}
+
+fn readStringArg(allocator: std.mem.Allocator, args: spacetime.BytesSource) ![]const u8 {
+    var maxbuf: [4]u8 = undefined;
+    const len_buf = try spacetime.read_bytes_source(args, &maxbuf);
+    const len: usize = std.mem.bytesToValue(u32, len_buf);
+    const string_buf = try allocator.alloc(u8, len);
+    return try spacetime.read_bytes_source(args, string_buf);
 }
 
 export fn __call_reducer__(
@@ -61,22 +78,30 @@ export fn __call_reducer__(
     args: spacetime.BytesSource,
     err: spacetime.BytesSink,
 ) i16 {
-    //const allocator = std.heap.wasm_allocator;
-    _ = args;
+    const allocator = std.heap.wasm_allocator;
     _ = err;
+    //_ = args;
 
     var ctx: spacetime.ReducerContext = .{
         .indentity = std.mem.bytesAsValue(u256, std.mem.sliceAsBytes(&[_]u64{ sender_0, sender_1, sender_2, sender_3})).*,
         .timestamp = timestamp,
         .connection_id  = std.mem.bytesAsValue(u128, std.mem.sliceAsBytes(&[_]u64{ conn_id_0, conn_id_1})).*,
+        .db = undefined,
     };
 
     switch(id) {
         0...2, 4 => {
-            callReducer(moduleDef, id, .{ &ctx });
+            callReducer(moduleReducersDef, id, .{ &ctx });
         },
         3 => {
-            callReducer(moduleDef, id, .{ &ctx, "blah" });
+            //var maxbuf: [1024]u8 = undefined;
+            //const buf = spacetime.read_bytes_source(args, &maxbuf) catch unreachable;
+            //const fmtbuf = std.fmt.allocPrint(allocator, "{any}", .{buf}) catch unreachable;
+            //defer allocator.free(fmtbuf);
+            //print(fmtbuf);
+            //manually parse args
+            const name: []const u8 = readStringArg(allocator, args) catch unreachable;
+            callReducer(moduleReducersDef, id, .{ &ctx, name });
         },
         else => unreachable,
     } 
@@ -107,9 +132,10 @@ pub fn OnDisconnect(_ctx: *spacetime.ReducerContext) void {
     print("Hello, OnDisconnect!");
 }
 
-pub fn add(_ctx: *spacetime.ReducerContext, name: []const u8) void {
-    _ = _ctx;
-    //ctx.db.person().insert(Person { name });
+pub fn add(ctx: *spacetime.ReducerContext, name: []const u8) void {
+    //@compileLog(.{@typeInfo(@TypeOf(ctx.db))});// .person().insert(Person { name });
+    _ = ctx.db.get(moduleTablesDef.Person);
+    //ctx.db.person().insert(Person{ .name = name });
     var buf: [128]u8 = undefined;
     print(std.fmt.bufPrint(&buf, "Hello, add({s})!", .{ name }) catch "[add] Error: name to long");
 }

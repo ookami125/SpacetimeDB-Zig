@@ -147,11 +147,11 @@ fn serialize_table_access(array: *std.ArrayList(u8), val: TableAccess) !void {
 }
 
 fn serialize_product_type_element(array: *std.ArrayList(u8), val: ProductTypeElement) !void {
-    try array.appendSlice(&[_]u8{ @intFromBool(val.name == null) });
-    if(val.name) |name| {
-        try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(name.len))));
-        try array.appendSlice(name);
-    }
+    try array.appendSlice(&[_]u8{ 0 });
+    //if(val.name) |name| {
+    try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(val.name.len))));
+    try array.appendSlice(val.name);
+    //}
     try serialize_algebraic_type(array, val.algebraic_type);
 }
 

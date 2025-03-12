@@ -50,9 +50,25 @@ pub const BytesSink = extern struct { inner: u32 };
 pub const BytesSource = extern struct { inner: u32 };
 
 pub extern "spacetime_10.0" fn bytes_sink_write(sink: BytesSink, buffer_ptr: [*c]const u8, buffer_len_ptr: *usize) u16;
+pub extern "spacetime_10.0" fn bytes_source_read(source: BytesSource, buffer_ptr: [*c]u8, buffer_len_ptr: *usize) i16;
 
 const NO_SUCH_BYTES = 8;
 const NO_SPACE = 9;
+
+/// Read `source` from the host fully into `buf`.
+pub fn read_bytes_source(source: BytesSource, buf: []u8) ![]u8 {
+    const INVALID: i16 = NO_SUCH_BYTES;
+
+    var buf_len = buf.len;
+    const ret = bytes_source_read(source, @ptrCast(buf), &buf_len);
+    switch(ret) {
+        -1, 0 => {},
+        INVALID => @panic("invalid source passed"),
+        else => unreachable,
+    }
+
+    return buf[0..buf_len];
+}
 
 pub fn write_to_sink(sink: BytesSink, _buf: []const u8) void {
     var buf: []const u8 = _buf;
@@ -73,46 +89,54 @@ pub fn write_to_sink(sink: BytesSink, _buf: []const u8) void {
     }
 }
 
-pub fn parse_reducers(root: type) []const RawReducerDefV9 {
-    const decls = std.meta.declarations(root);
-    //@compileLog(.{ decls });
+// pub fn parse_reducers(root: type) []const RawReducerDefV9 {
+//     const decls = std.meta.declarations(root);
+//     //@compileLog(.{ decls });
 
-    var reducers : []const RawReducerDefV9 = &[_]RawReducerDefV9{};
-    _ = &reducers;
+//     var reducers : []const RawReducerDefV9 = &[_]RawReducerDefV9{};
+//     _ = &reducers;
 
-    inline for(decls) |decl| {
+//     inline for(decls) |decl| {
 
-        const temp = @field(root, decl.name);
-        const temp_type = @typeInfo(@TypeOf(temp)); 
-        if(temp_type != .@"fn") continue;
-        if(temp_type.@"fn".params[0].type.? != *ReducerContext) continue;
+//         const temp = @field(root, decl.name);
+//         const temp_type = @typeInfo(@TypeOf(temp)); 
+//         if(temp_type != .@"fn") continue;
+//         if(temp_type.@"fn".params[0].type.? != *ReducerContext) continue;
 
-        const lifecycle: ?Lifecycle = blk: {
-            if(std.mem.eql(u8, decl.name, "Init")) break :blk .Init;
-            if(std.mem.eql(u8, decl.name, "OnConnect")) break :blk .OnConnect;
-            if(std.mem.eql(u8, decl.name, "OnDisconnect")) break :blk .OnDisconnect;
-            break :blk null;
-        };
+//         const lifecycle: ?Lifecycle = blk: {
+//             if(std.mem.eql(u8, decl.name, "Init")) break :blk .Init;
+//             if(std.mem.eql(u8, decl.name, "OnConnect")) break :blk .OnConnect;
+//             if(std.mem.eql(u8, decl.name, "OnDisconnect")) break :blk .OnDisconnect;
+//             break :blk null;
+//         };
 
-        reducers = reducers ++ &[_]RawReducerDefV9{
-            .{
-                .name = decl.name,
-                .params = .{ .elements = &[_]ProductTypeElement{} },
-                .lifecycle = lifecycle,
-            },
-        };
+//         reducers = reducers ++ &[_]RawReducerDefV9{
+//             .{
+//                 .name = decl.name,
+//                 .params = .{ .elements = &[_]ProductTypeElement{} },
+//                 .lifecycle = lifecycle,
+//             },
+//         };
 
-    }
+//     }
 
-    return reducers;
-}
+//     return reducers;
+// }
+
+pub const Param = struct {
+    name: []const u8,
+};
 
 pub fn Reducer(comptime func: anytype) type {
     const @"spacetime_10.0__reducer_" = struct {
         name: ?[]const u8 = null,
         func: @TypeOf(func) = func,
         lifecycle: ?Lifecycle = null,
+        param_names: []const []const u8 = &[_][]const u8{},
     };
+
+    //@compileLog(.{@TypeOf(func)});
+
     return @"spacetime_10.0__reducer_";
 }
 
@@ -126,7 +150,15 @@ pub fn Table(comptime table: anytype) type {
     return @"spacetime_10.0__table_";
 }
 
-pub fn compile(comptime module : anytype) RawModuleDefV9 {
+fn zigTypeToSpacetimeType(comptime param: ?type) !AlgebraicType {
+    if(param == null) @compileError("Null parameter type passed to zigParamsToSpacetimeParams");
+    return switch(param.?) {
+        []const u8 => .{ .String = {} },
+        else => error.ZigTypeNotSupported,
+    };
+}
+
+pub fn compile(comptime moduleTables : anytype, comptime moduleReducers : anytype) !RawModuleDefV9 {
     var def : RawModuleDefV9 = undefined;
     _ = &def;
 
@@ -134,11 +166,12 @@ pub fn compile(comptime module : anytype) RawModuleDefV9 {
     var tables: []const RawTableDefV9 = &[_]RawTableDefV9{};
     var reducers: []const RawReducerDefV9 = &[_]RawReducerDefV9{};
 
-    inline for(std.meta.fields(@TypeOf(module))) |field| {
-        const name: []const u8 = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*.name orelse field.name;
+    inline for(std.meta.fields(@TypeOf(moduleTables))) |field| {
+        const default_values = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*;
+        const name: []const u8 = default_values.name orelse field.name;
         if( std.mem.endsWith(u8, @typeName(field.type), "spacetime_10.0__table_")) {
-            const table_type: TableType = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*.table_type;
-            const table_access: TableAccess = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*.table_access;
+            const table_type: TableType = default_values.table_type;
+            const table_access: TableAccess = default_values.table_access;
             tables = tables ++ &[_]RawTableDefV9{
                 .{
                     .name = name,
@@ -154,12 +187,34 @@ pub fn compile(comptime module : anytype) RawModuleDefV9 {
             };
             continue;
         }
+        @compileLog(.{ field });
+    }
+
+    inline for(std.meta.fields(@TypeOf(moduleReducers))) |field| {
+        const default_values = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*;
+        const name: []const u8 = default_values.name orelse field.name;
         if( std.mem.endsWith(u8, @typeName(field.type), "spacetime_10.0__reducer_")) {
-            const lifecycle: ?Lifecycle = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*.lifecycle;
+            const lifecycle: ?Lifecycle = default_values.lifecycle;
+            
+            //parse the arguments
+            var params: []const ProductTypeElement = &[_]ProductTypeElement{};
+            const param_names = default_values.param_names;
+
+            //@compileLog(.{@typeInfo(@TypeOf(default_values.func)).@"fn"});
+            for(@typeInfo(@TypeOf(default_values.func)).@"fn".params[1..], param_names) |param, param_name| {
+                //@compileLog(.{ name, param });
+                params = params ++ &[_]ProductTypeElement{
+                    .{
+                        .name = param_name,
+                        .algebraic_type = try zigTypeToSpacetimeType(param.type),
+                    }
+                };
+            }
+
             reducers = reducers ++ &[_]RawReducerDefV9{
                 .{
                     .name = name,
-                    .params = .{ .elements = &[_]ProductTypeElement{} },
+                    .params = .{ .elements = params },
                     .lifecycle = lifecycle,
                 },
             };

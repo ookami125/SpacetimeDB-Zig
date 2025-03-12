@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const Str = []const u8;
 
 pub const SumTypeVariant = struct {
@@ -110,7 +112,7 @@ pub const RawTableDefV9 = struct {
 };
 
 pub const ProductTypeElement = struct {
-    name: ?Str,
+    name: Str,
     algebraic_type: AlgebraicType,
 };
 
@@ -124,11 +126,27 @@ pub const Lifecycle = enum {
     OnDisconnect,
 };
 
+pub fn Table2Struct(comptime table_type: type) type {
+    _ = table_type;
+    return struct {
+
+    };
+}
+
+pub const Local = struct {
+    pub fn get(self: @This(), table: anytype) Table2Struct(@TypeOf(table)) {
+        _ = self;
+        return .{
+            //.name = "blahsss",
+        };
+    }
+};
+
 pub const ReducerContext = struct {
     indentity: u256,
     timestamp: u64,
     connection_id: u128,
-
+    db: Local,
 };
 
 pub const ReducerFn = fn(*ReducerContext) void;
