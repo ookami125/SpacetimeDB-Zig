@@ -7,7 +7,8 @@ pub export fn spacetime_includes() void {
 }
 
 pub const moduleTablesDef = .{
-    .person = Person,
+    .person = spacetime.Table(.{.name = "person", .layout = Person}),
+    .person2 = spacetime.Table(.{.name = "person2", .layout = Person}),
 };
 
 pub const moduleReducersDef = .{

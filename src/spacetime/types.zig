@@ -1,4 +1,5 @@
 const std = @import("std");
+const utils = @import("utils.zig");
 const spacetime = @import("../spacetime.zig");
 const console_log = spacetime.console_log;
 const TableId = spacetime.TableId;
@@ -130,7 +131,8 @@ pub const Lifecycle = enum {
 
 fn getStructSize(data: anytype) usize {
     const struct_type = @TypeOf(data);
-    const @"spacetime_10.0__table_" = std.meta.fields(struct_type)[std.meta.fieldIndex(struct_type, spacetime.MagicStruct).?].type;
+
+    const @"spacetime_10.0__table_" = utils.getMemberDefaultType(struct_type, spacetime.MagicStruct);
 
     const fields = std.meta.fields(@TypeOf(data));
     var size: usize = 0;
@@ -155,7 +157,6 @@ fn getStructSize(data: anytype) usize {
                     size += getStructSize(@field(data, field.name));
                     break :blk;
                 }
-                //const subname = @as(*field.type, @constCast(@alignCast(@ptrCast(field.default_value)))).*.name.?;
                 @compileLog(field.type);
                 @compileError("Unsupported type in StructSerializer");
             },
@@ -167,7 +168,7 @@ fn getStructSize(data: anytype) usize {
 
 fn getStructData(data: anytype, mem: []u8) []u8 {
     const struct_type = @TypeOf(data);
-    const @"spacetime_10.0__table_" = std.meta.fields(struct_type)[std.meta.fieldIndex(struct_type, spacetime.MagicStruct).?].type;
+    const @"spacetime_10.0__table_" = utils.getMemberDefaultType(struct_type, spacetime.MagicStruct);
 
     const fields = std.meta.fields(@TypeOf(data));
     var offset_mem = mem;
@@ -220,8 +221,7 @@ pub fn StructSerializer(struct_type: type) fn(std.mem.Allocator, struct_type) st
 } 
 
 pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[]const u8) std.mem.Allocator.Error!*struct_type {
-
-    const @"spacetime_10.0__table_" = std.meta.fields(struct_type)[std.meta.fieldIndex(struct_type, spacetime.MagicStruct).?].type;
+    const @"spacetime_10.0__table_" = utils.getMemberDefaultType(struct_type, spacetime.MagicStruct);
     
     return struct {
         pub fn deserialize(allocator: std.mem.Allocator, data: *[]const u8) std.mem.Allocator.Error!*struct_type {
@@ -265,13 +265,10 @@ pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[
     }.deserialize;
 } 
 
-pub fn Table2Struct(comptime table_type: type) type {
+pub fn Table2ORM(comptime table_type: type) type {
+    const table_name = utils.getMemberDefaultValue(table_type, "name");
+    const struct_type = utils.getMemberDefaultValue(table_type, "layout");
 
-    const fields = std.meta.fields(table_type);
-    const field = fields[std.meta.fieldIndex(table_type, spacetime.MagicStruct).?];
-    const struct_type = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*;
-    const table_name: []const u8 = struct_type.name.?;
-    
     return struct {
         allocator: std.mem.Allocator,
 
@@ -282,7 +279,7 @@ pub fn Table2Struct(comptime table_type: type) type {
             contents: []u8 = undefined,
             last_ret: i16 = spacetime.OK,
             
-            pub fn next(self: *@This()) !?*table_type {
+            pub fn next(self: *@This()) !?*struct_type {
                 var buffer_len: usize = undefined;
                 while(true)
                 {
@@ -302,7 +299,7 @@ pub fn Table2Struct(comptime table_type: type) type {
 
                     switch(ret) {
                         spacetime.EXHAUSTED, spacetime.OK => {
-                            return StructDeserializer(table_type)(self.allocator, &self.contents);
+                            return StructDeserializer(struct_type)(self.allocator, &self.contents);
                         },
                         spacetime.BUFFER_TOO_SMALL => {
                             return error.BUFFER_TOO_SMALL;
@@ -321,10 +318,10 @@ pub fn Table2Struct(comptime table_type: type) type {
             }    
         };
         
-        pub fn insert(self: @This(), data: table_type) void {
+        pub fn insert(self: @This(), data: struct_type) void {
             var id: TableId = undefined;
             _ = spacetime.table_id_from_name(table_name.ptr, table_name.len, &id);
-            const raw_data = StructSerializer(table_type)(self.allocator, data) catch return;
+            const raw_data = StructSerializer(struct_type)(self.allocator, data) catch return;
             defer self.allocator.free(raw_data);
             var raw_data_len: usize = raw_data.len;
             _ = spacetime.datastore_insert_bsatn(id, raw_data.ptr, &raw_data_len);
@@ -346,7 +343,7 @@ pub fn Table2Struct(comptime table_type: type) type {
 pub const Local = struct {
     allocator: std.mem.Allocator,
 
-    pub fn get(self: @This(), table: anytype) Table2Struct(table) {
+    pub fn get(self: @This(), table: anytype) Table2ORM(table) {
         return .{
             .allocator = self.allocator,
         };

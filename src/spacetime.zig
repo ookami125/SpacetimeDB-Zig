@@ -1,4 +1,5 @@
 const std = @import("std");
+const utils = @import("spacetime/utils.zig");
 
 pub const st_types = @import("spacetime/types.zig");
 pub const serializer = @import("spacetime/serializer.zig");
@@ -146,11 +147,14 @@ fn spacetimeType2ZigType(t: AlgebraicType) type {
     };
 }
 
+const StructFieldImpl = struct {
+    name: []const u8,
+    type: AlgebraicType,
+};
+
 pub fn Struct(comptime decl: StructDecl) type {
     const @"spacetime_10.0__struct_" = struct {
-        name: ?[]const u8 = decl.name,
-        table_type: TableType = .User,
-        table_access: TableAccess = .Private,
+        name: []const u8 = decl.name,
     };
 
     var zigStructMembers: []const std.builtin.Type.StructField = &[_]std.builtin.Type.StructField{
@@ -185,16 +189,21 @@ pub fn Struct(comptime decl: StructDecl) type {
     });
 }
 
-// pub fn Table(comptime decl: type) type {
-//     const @"spacetime_10.0__table_" = struct {
-//         name: []const u8,
-//         table_type: TableType = .User,
-//         table_access: TableAccess = .Private,
-//         type: decl = std.mem.zeroes(decl),
-//     };
+pub const TableDecl = struct {
+    name: []const u8,
+    layout: type,
+};
 
-//     return @"spacetime_10.0__table_";
-//}
+pub fn Table(comptime decl: TableDecl) type {
+    const @"spacetime_10.0__table_" = struct {
+        name: []const u8 = decl.name,
+        table_type: TableType = .User,
+        table_access: TableAccess = .Private,
+        layout: @TypeOf(decl.layout) = decl.layout,
+    };
+
+    return @"spacetime_10.0__table_";
+}
 
 pub fn readArg(allocator: std.mem.Allocator, args: BytesSource, comptime t: AlgebraicType) !spacetimeType2ZigType(t) {
     switch(t) {
@@ -236,62 +245,53 @@ pub fn zigTypeToSpacetimeType(comptime param: ?type) AlgebraicType {
     };
 }
 
-pub fn buildTypeList(name: []const u8, default_values: type, raw_types: *[]const AlgebraicType, types: *[]const RawTypeDefV9) usize
-{
-    var product_elements: []const ProductTypeElement = &[_]ProductTypeElement{};
+const StructImpl = struct {
+    name: []const u8,
+    fields: []const StructFieldImpl,
+};
 
-    inline for(@typeInfo(default_values).@"struct".fields, 0..) |table_field, i| {
-        if(i == 0) continue;
-        
-        
-        if(@typeInfo(table_field.type) == .@"struct" and std.meta.fieldIndex(table_field.type, MagicStruct) != null) {
-            
-            const table = std.meta.fields(table_field.type)[std.meta.fieldIndex(table_field.type, MagicStruct).?];
-            const subname = @as(*table.type, @constCast(@alignCast(@ptrCast(table.default_value)))).*.name.?;
-            //_ = subname;
-            //@compileLog(table_field.type);
-            const id = buildTypeList(subname, table_field.type, raw_types, types);
-            product_elements = product_elements ++ &[_]ProductTypeElement{
+pub fn addStructImpl(structImpls: *[]const StructImpl, layout: anytype) u32 {
+    var members: []const StructFieldImpl = &[_]StructFieldImpl{};
+    
+    const fields = std.meta.fields(layout);
+    const name = utils.getMemberDefaultValue(fields[0].type, "name");
+
+    //FIXME: Search for existing structImpl of provided layout. I think the current might work, but I don't trust it.
+    inline for(structImpls.*, 0..) |structImpl, i| {
+        if(std.mem.eql(u8, structImpl.name, name)) {
+            return i;
+        }
+    }
+    
+    inline for(fields[1..]) |field| {
+        if(@typeInfo(field.type) == .@"struct") {
+            members = members ++ &[_]StructFieldImpl{
                 .{
-                    .name = table_field.name,
-                    .algebraic_type = .{
+                    .name = field.name,
+                    .type = .{
                         .Ref = .{
-                            .inner = id,
+                            .inner = addStructImpl(structImpls, field.type),
                         }
                     }
                 }
             };
-            
         } else {
-            product_elements = product_elements ++ &[_]ProductTypeElement{
+            members = members ++ &[_]StructFieldImpl{
                 .{
-                    .name = table_field.name,
-                    .algebraic_type = zigTypeToSpacetimeType(table_field.type)
+                    .name = field.name,
+                    .type = zigTypeToSpacetimeType(field.type),
                 }
             };
         }
-
+        members = members ++ &[_]StructFieldImpl{};
     }
-
-    raw_types.* = raw_types.* ++ &[_]AlgebraicType{
+    structImpls.* = structImpls.* ++ &[_]StructImpl{
         .{
-            .Product = .{
-                .elements = product_elements,
-            }
+            .name = name,
+            .fields = members,
         },
     };
-    types.* = types.* ++ &[_]RawTypeDefV9{
-        .{
-            .name = .{
-                .scope = &[_][]u8{},
-                .name = name
-            },
-            .ty = .{ .inner = raw_types.len-1, },
-            .custom_ordering = true,
-        }
-    };
-
-    return types.len-1;
+    return structImpls.len - 1;
 }
 
 pub fn compile(comptime moduleTables : anytype, comptime moduleReducers : anytype) !RawModuleDefV9 {
@@ -304,25 +304,16 @@ pub fn compile(comptime moduleTables : anytype, comptime moduleReducers : anytyp
     var raw_types: []const AlgebraicType = &[_]AlgebraicType{};
     var types: []const RawTypeDefV9 = &[_]RawTypeDefV9{};
 
+    var structDecls: []const StructImpl = &[_]StructImpl{};
+
     inline for(std.meta.fields(@TypeOf(moduleTables))) |field| {
-        //const struct_decl = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*;
-        //@compileLog(@TypeOf(struct_decl.type));
-        const default_values = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*;
-        const structInfo = blk: {
-            for(@typeInfo(default_values).@"struct".fields) |structInfoField| {
-                if(std.mem.eql(u8, structInfoField.name, MagicStruct)) {
-                    break :blk structInfoField.type{};
-                }
-            }
-        };
-
+        const table: @as(*const field.type, @alignCast(@ptrCast(field.default_value))).* = .{};
+        const name: []const u8 = table.name;
+        const table_type: TableType = table.table_type;
+        const table_access: TableAccess = table.table_access;
         const product_type_ref: AlgebraicTypeRef = AlgebraicTypeRef{
-            .inner = buildTypeList(field.name, default_values, &raw_types, &types),
+            .inner = addStructImpl(&structDecls, table.layout),
         };
-
-        const name: []const u8 = structInfo.name.?;
-        const table_type: TableType = structInfo.table_type;
-        const table_access: TableAccess = structInfo.table_access;
         tables = tables ++ &[_]RawTableDefV9{
             .{
                 .name = name,
@@ -334,6 +325,39 @@ pub fn compile(comptime moduleTables : anytype, comptime moduleReducers : anytyp
                 .schedule = null,
                 .table_type = table_type,
                 .table_access = table_access,
+            }
+        };
+    }
+
+    inline for(structDecls) |structDecl| {
+        var product_elements: []const ProductTypeElement = &[_]ProductTypeElement{};
+
+        inline for(structDecl.fields) |field|
+        {
+            product_elements = product_elements ++ &[_]ProductTypeElement{
+                .{
+                    .name = field.name,
+                    .algebraic_type = field.type,
+                }
+            };
+        }
+
+        raw_types = raw_types ++ &[_]AlgebraicType{
+            .{
+                .Product = .{
+                    .elements = product_elements,
+                }
+            },
+        };
+
+        types = types ++ &[_]RawTypeDefV9{
+            .{
+                .name = .{
+                    .scope = &[_][]u8{},
+                    .name = structDecl.name
+                },
+                .ty = .{ .inner = raw_types.len-1, },
+                .custom_ordering = true,
             }
         };
     }
@@ -501,20 +525,6 @@ pub export fn __describe_module__(description: BytesSink) void {
     write_to_sink(description, moduleDefBytes.items);
 }
 
-fn itoa(comptime value: anytype) [:0]const u8 {
-    comptime var s: []const u8 = &[_]u8{};
-    comptime var n = value;
-    if (n == 0) {
-        s = s ++ .{'0'};
-    } else {
-        comptime while (n != 0) {
-            s = s ++ .{'0' + (n % 10)};
-            n = n / 10;
-        };
-    }
-    return @ptrCast(s ++ .{0});
-}
-
 pub export fn __call_reducer__(
     id: usize,
     sender_0: u64,
@@ -545,7 +555,7 @@ pub export fn __call_reducer__(
         if( comptime std.mem.endsWith(u8, @typeName(field.type), "spacetime_10.0__reducer_")) {
             defer i += 1;
             if(id == i) {
-                const func = std.meta.fields(field.type)[std.meta.fieldIndex(field.type, "func").?].type;
+                const func = utils.getMemberDefaultType(field.type, "func");
                 const params = @typeInfo(func).@"fn".params;
                 const param_names = @field(moduleReducersDef, field.name).param_names;
                 comptime var argCount = 1;
@@ -566,7 +576,7 @@ pub export fn __call_reducer__(
                             .alignment = 0,
                             .default_value = null,
                             .is_comptime = false,
-                            .name = comptime itoa(argCount),
+                            .name = comptime utils.itoa(argCount),
                             .type = param.type.?,
                         }
                     };
@@ -590,7 +600,7 @@ pub export fn __call_reducer__(
                 if(args.inner != 0) {
                     inline for(params, 0..) |param, name| {
                         comptime if(name == 0) continue;
-                        @field(constructedArg, itoa(name)) = readArg(allocator, args, zigTypeToSpacetimeType(param.type.?)) catch |err2| {
+                        @field(constructedArg, utils.itoa(name)) = readArg(allocator, args, zigTypeToSpacetimeType(param.type.?)) catch |err2| {
                             var buf: [512]u8 = undefined;
                             print(std.fmt.bufPrint(&buf, "Error: {}", .{err2}) catch "Expand Error Buffer!");
                             @panic("blah");
