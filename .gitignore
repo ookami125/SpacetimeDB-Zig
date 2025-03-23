@@ -1,4 +1,3 @@
 .zig-cache/
-csharp-reference/
-rust-reference/
+references/
 zig-out/

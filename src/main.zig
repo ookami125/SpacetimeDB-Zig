@@ -7,23 +7,30 @@ pub export fn spacetime_includes() void {
 }
 
 pub const moduleTablesDef = .{
-    .Person = Person,
+    .person = Person,
 };
 
 pub const moduleReducersDef = .{
     .Init = spacetime.Reducer(Init){ .lifecycle = .Init },
     .OnConnect = spacetime.Reducer(OnConnect){ .lifecycle = .OnConnect },
     .OnDisconnect = spacetime.Reducer(OnDisconnect){ .lifecycle = .OnDisconnect },
-    .add = spacetime.Reducer(add){ .param_names = &[_][:0]const u8{ "name", "age", "blah" }},
+    .add = spacetime.Reducer(add){ .param_names = &[_][:0]const u8{ "name" }},
     .say_hello = spacetime.Reducer(say_hello){},
 };
+
+pub const DbVector2 = spacetime.Struct(.{
+    .name = "DbVector2",
+    .fields = &[_]spacetime.StructFieldDecl{
+        .{ .name = "x", .type = f32, },
+        .{ .name = "y", .type = f32 },
+    },
+});
 
 pub const Person = spacetime.Struct(.{
     .name = "person",
     .fields = &[_]spacetime.StructFieldDecl{
-        .{ .name = "name", .type = .String, },
-        .{ .name = "age", .type = .U32, },
-        .{ .name = "blah", .type = .U64, },
+        .{ .name = "name", .type = []const u8, },
+        .{ .name = "pos", .type = DbVector2, },
     },
 });
 
@@ -45,22 +52,22 @@ pub fn OnDisconnect(ctx: *spacetime.ReducerContext) void {
     spacetime.print("[OnDisconnect]");
 }
 
-pub fn add(ctx: *spacetime.ReducerContext, name: []const u8, age: u32, blah: u64) void {
-    const personTable = ctx.*.db.get(moduleTablesDef.Person);
-    personTable.insert(Person{ .name = name, .age = age, .blah = blah });
+pub fn add(ctx: *spacetime.ReducerContext, name: []const u8) void {
+   const personTable = ctx.*.db.get(moduleTablesDef.person);
+   personTable.insert(Person{ .name = name, .pos = DbVector2{ .x = 10.4, .y = 20.6 } });
 
-    var buf: [128]u8 = undefined;
-    spacetime.print(std.fmt.bufPrint(&buf, "[add] {{{s}, {}}}!", .{ name, age }) catch "[add] Error: name to long");
+   var buf: [128]u8 = undefined;
+   spacetime.print(std.fmt.bufPrint(&buf, "[add] {{{s}}}!", .{ name }) catch "[add] Error: name to long");
 }
 
 pub fn say_hello(ctx: *spacetime.ReducerContext) void {
-    var personIter = ctx.*.db.get(moduleTablesDef.Person).iter();
-    while(personIter.next() catch {
-        @panic("person Iter errored!");
-    }) |person| {
-        var buffer: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buffer, "Hello, {s} (age: {})!", .{ person.name, person.age }) catch "<Unknown>";
-        spacetime.print(msg);
-    }
-    spacetime.print("Hello, World!");
+   var personIter = ctx.*.db.get(moduleTablesDef.person).iter();
+   while(personIter.next() catch {
+      @panic("person Iter errored!");
+   }) |person| {
+      var buffer: [512]u8 = undefined;
+      const msg = std.fmt.bufPrint(&buffer, "Hello, {s} (pos: {{{d}, {d}}})!", .{ person.name, person.pos.x, person.pos.y }) catch "<Unknown>";
+      spacetime.print(msg);
+   }
+   spacetime.print("Hello, World!");
 }

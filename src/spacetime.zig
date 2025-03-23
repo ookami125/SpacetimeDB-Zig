@@ -64,6 +64,13 @@ pub const RowIter = extern struct { _inner: u32, pub const INVALID = RowIter{ ._
 pub extern "spacetime_10.0" fn row_iter_bsatn_advance(iter: RowIter, buffer_ptr: [*c]u8, buffer_len_ptr: *usize) i16;
 pub extern "spacetime_10.0" fn datastore_table_scan_bsatn(table_id: TableId, out: [*c]RowIter) u16;
 
+// pub const Identity = struct {
+//     __identity__: u256,
+// };
+
+pub const MagicStruct = "spacetime_10.0__struct_";
+pub const MagicTable = "spacetime_10.0__table_";
+
 pub const EXHAUSTED = -1;
 pub const OK = 0;
 pub const NO_SUCH_ITER = 6;
@@ -120,7 +127,7 @@ pub fn Reducer(comptime func: anytype) type {
 
 pub const StructFieldDecl = struct {
     name: [:0]const u8,
-    type: AlgebraicType,
+    type: type,
     isPrimaryKey: bool = false,
     autoInc: bool = false,
 };
@@ -140,7 +147,7 @@ fn spacetimeType2ZigType(t: AlgebraicType) type {
 }
 
 pub fn Struct(comptime decl: StructDecl) type {
-    const @"spacetime_10.0__table_" = struct {
+    const @"spacetime_10.0__struct_" = struct {
         name: ?[]const u8 = decl.name,
         table_type: TableType = .User,
         table_access: TableAccess = .Private,
@@ -148,9 +155,9 @@ pub fn Struct(comptime decl: StructDecl) type {
 
     var zigStructMembers: []const std.builtin.Type.StructField = &[_]std.builtin.Type.StructField{
         std.builtin.Type.StructField{
-            .name = "spacetime_10.0__table_",
-            .type = @"spacetime_10.0__table_",
-            .default_value = @as(?*const anyopaque, &@"spacetime_10.0__table_"{}),
+            .name = MagicStruct,
+            .type = @"spacetime_10.0__struct_",
+            .default_value = @as(?*const anyopaque, &@"spacetime_10.0__struct_"{}),
             .is_comptime = false,
             .alignment = 0,
         },
@@ -160,7 +167,7 @@ pub fn Struct(comptime decl: StructDecl) type {
         zigStructMembers = zigStructMembers ++ &[_]std.builtin.Type.StructField{
             std.builtin.Type.StructField{
                 .name = field.name,
-                .type = spacetimeType2ZigType(field.type),
+                .type = field.type,
                 .default_value = null,
                 .is_comptime = false,
                 .alignment = 0,
@@ -177,6 +184,17 @@ pub fn Struct(comptime decl: StructDecl) type {
         },
     });
 }
+
+// pub fn Table(comptime decl: type) type {
+//     const @"spacetime_10.0__table_" = struct {
+//         name: []const u8,
+//         table_type: TableType = .User,
+//         table_access: TableAccess = .Private,
+//         type: decl = std.mem.zeroes(decl),
+//     };
+
+//     return @"spacetime_10.0__table_";
+//}
 
 pub fn readArg(allocator: std.mem.Allocator, args: BytesSource, comptime t: AlgebraicType) !spacetimeType2ZigType(t) {
     switch(t) {
@@ -209,11 +227,71 @@ pub fn zigTypeToSpacetimeType(comptime param: ?type) AlgebraicType {
         []const u8 => .{ .String = {} },
         u32 => .{ .U32 = {}, },
         u64 => .{ .U64 = {}, },
+        f32 => .{ .F32 = {}, },
+        //Identity => .{ .U256 = {}, },
         else => {
             @compileLog(param.?);
             @compileError("Unmatched type passed to zigTypeToSpacetimeType!");
         },
     };
+}
+
+pub fn buildTypeList(name: []const u8, default_values: type, raw_types: *[]const AlgebraicType, types: *[]const RawTypeDefV9) usize
+{
+    var product_elements: []const ProductTypeElement = &[_]ProductTypeElement{};
+
+    inline for(@typeInfo(default_values).@"struct".fields, 0..) |table_field, i| {
+        if(i == 0) continue;
+        
+        
+        if(@typeInfo(table_field.type) == .@"struct" and std.meta.fieldIndex(table_field.type, MagicStruct) != null) {
+            
+            const table = std.meta.fields(table_field.type)[std.meta.fieldIndex(table_field.type, MagicStruct).?];
+            const subname = @as(*table.type, @constCast(@alignCast(@ptrCast(table.default_value)))).*.name.?;
+            //_ = subname;
+            //@compileLog(table_field.type);
+            const id = buildTypeList(subname, table_field.type, raw_types, types);
+            product_elements = product_elements ++ &[_]ProductTypeElement{
+                .{
+                    .name = table_field.name,
+                    .algebraic_type = .{
+                        .Ref = .{
+                            .inner = id,
+                        }
+                    }
+                }
+            };
+            
+        } else {
+            product_elements = product_elements ++ &[_]ProductTypeElement{
+                .{
+                    .name = table_field.name,
+                    .algebraic_type = zigTypeToSpacetimeType(table_field.type)
+                }
+            };
+        }
+
+    }
+
+    raw_types.* = raw_types.* ++ &[_]AlgebraicType{
+        .{
+            .Product = .{
+                .elements = product_elements,
+            }
+        },
+    };
+    types.* = types.* ++ &[_]RawTypeDefV9{
+        .{
+            .name = .{
+                .scope = &[_][]u8{},
+                .name = name
+            },
+            .ty = .{ .inner = raw_types.len-1, },
+            .custom_ordering = true,
+        }
+    };
+
+    return types.len-1;
 }
 
 pub fn compile(comptime moduleTables : anytype, comptime moduleReducers : anytype) !RawModuleDefV9 {
@@ -227,50 +305,20 @@ pub fn compile(comptime moduleTables : anytype, comptime moduleReducers : anytyp
     var types: []const RawTypeDefV9 = &[_]RawTypeDefV9{};
 
     inline for(std.meta.fields(@TypeOf(moduleTables))) |field| {
+        //const struct_decl = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*;
+        //@compileLog(@TypeOf(struct_decl.type));
         const default_values = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*;
         const structInfo = blk: {
             for(@typeInfo(default_values).@"struct".fields) |structInfoField| {
-                if(std.mem.eql(u8, structInfoField.name, "spacetime_10.0__table_")) {
+                if(std.mem.eql(u8, structInfoField.name, MagicStruct)) {
                     break :blk structInfoField.type{};
                 }
             }
         };
 
-        var product_type_ref: AlgebraicTypeRef = undefined;
-        {
-            var product_elements: []const ProductTypeElement = &[_]ProductTypeElement{};
-            
-            inline for(@typeInfo(default_values).@"struct".fields, 0..) |table_field, i| {
-                if(i == 0) continue;
-                product_elements = product_elements ++ &[_]ProductTypeElement{
-                    .{
-                        .name = table_field.name,
-                        .algebraic_type = zigTypeToSpacetimeType(table_field.type)
-                    }
-                };
-            }
-
-            raw_types = raw_types ++ &[_]AlgebraicType{
-                .{
-                    .Product = .{
-                        .elements = product_elements,
-                    }
-                },
-            };
-
-            types = types ++ &[_]RawTypeDefV9{
-                .{
-                    .name = .{
-                        .scope = &[_][]u8{},
-                        .name = field.name
-                    },
-                    .ty = .{ .inner = raw_types.len-1, },
-                    .custom_ordering = true,
-                }
-            };
-
-            product_type_ref.inner = types.len-1;
-        }
+        const product_type_ref: AlgebraicTypeRef = AlgebraicTypeRef{
+            .inner = buildTypeList(field.name, default_values, &raw_types, &types),
+        };
 
         const name: []const u8 = structInfo.name.?;
         const table_type: TableType = structInfo.table_type;
@@ -352,6 +400,76 @@ pub fn callReducer(comptime mdef: anytype, id: usize, args: anytype) void {
     }
 }
 
+pub fn PrintModule(data: anytype) void {
+    var buf: [64]u8 = undefined;
+    print(std.fmt.bufPrint(&buf, "\"{s}\": {{", .{@typeName(@TypeOf(data))}) catch "<Error>");
+    switch(@TypeOf(data)) {
+        RawModuleDefV9 => {
+            PrintModule(data.typespace);
+            PrintModule(data.tables);
+            PrintModule(data.reducers);
+            PrintModule(data.types);
+        },
+        Typespace => {
+            for(data.types) |_type| {
+                PrintModule(_type);
+            }
+        },
+        AlgebraicType => {
+            switch(data) {
+                .Ref => PrintModule(data.Ref),
+                .Product => PrintModule(data.Product),
+                else => {},
+            }
+        },
+        AlgebraicTypeRef => {
+            PrintModule(data.inner);
+        },
+        ProductType => {
+            for(data.elements) |elem| {
+                PrintModule(elem);
+            }
+        },
+        ProductTypeElement => {
+            PrintModule(data.name);
+            PrintModule(data.algebraic_type);
+        },
+        []const RawTableDefV9 => {
+            for(data) |elem| {
+                PrintModule(elem);
+            }
+        },
+        []const RawTypeDefV9 => {
+            for(data) |elem| {
+                PrintModule(elem);
+            }
+        },
+        RawTypeDefV9 => {
+            PrintModule(data.name);
+            PrintModule(data.ty);
+        },
+        RawScopedTypeNameV9 => {
+            PrintModule(data.scope);
+            PrintModule(data.name);
+        },
+        [][]const u8 => {
+            for(data) |elem| {
+                PrintModule(elem);
+            }
+        },
+        []const u8 => {
+            print(std.fmt.bufPrint(&buf, "\"{s}\"", .{data}) catch "<Error>");
+        },
+        u32 => {
+            print(std.fmt.bufPrint(&buf, "{}", .{data}) catch "<Error>");
+        },
+        else => {
+            print("\"...\"");
+        },
+    }
+    print("},");
+}
+
 const moduleTablesDef = @import("root").moduleTablesDef;
 const moduleReducersDef = @import("root").moduleReducersDef;
 
@@ -362,16 +480,23 @@ pub export fn __describe_module__(description: BytesSink) void {
     var moduleDefBytes = std.ArrayList(u8).init(allocator);
     defer moduleDefBytes.deinit();
 
-    serialize_module(&moduleDefBytes, comptime compile(moduleTablesDef, moduleReducersDef) catch |err| {
+    const compiledModule = comptime compile(moduleTablesDef, moduleReducersDef) catch |err| {
         var buf: [1024]u8 = undefined;
         const fmterr = std.fmt.bufPrint(&buf, "Error: {}", .{err}) catch {
             @compileError("ERROR2: No Space Left! Expand error buffer size!");
         };
         @compileError(fmterr);
-    }) catch {
+    };
+
+    //PrintModule(compiledModule);
+
+    serialize_module(&moduleDefBytes, compiledModule) catch {
         print("Allocator Error: Cannot continue!");
         @panic("Allocator Error: Cannot continue!");
     };
+
+    //var buffer: [8196]u8 = undefined;
+    //print(std.fmt.bufPrint(&buffer, "{any}", .{moduleDefBytes.items}) catch "Expand buffer");
 
     write_to_sink(description, moduleDefBytes.items);
 }

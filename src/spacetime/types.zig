@@ -128,57 +128,92 @@ pub const Lifecycle = enum {
     OnDisconnect,
 };
 
+fn getStructSize(data: anytype) usize {
+    const struct_type = @TypeOf(data);
+    const @"spacetime_10.0__table_" = std.meta.fields(struct_type)[std.meta.fieldIndex(struct_type, spacetime.MagicStruct).?].type;
+
+    const fields = std.meta.fields(@TypeOf(data));
+    var size: usize = 0;
+    inline for(fields) |field| {
+        switch(field.type) {
+            []const u8 => {
+                const val = @field(data, field.name);
+                size += 4 + val.len;
+            },
+            u32 => {
+                size += 4;
+            },
+            u64 => {
+                size += 8;
+            },
+            f32 => {
+                size += 4;
+            },
+            @"spacetime_10.0__table_" => {},
+            else => blk: {
+                if(@typeInfo(field.type) == .@"struct" and std.meta.fieldIndex(field.type, spacetime.MagicStruct) != null) {
+                    size += getStructSize(@field(data, field.name));
+                    break :blk;
+                }
+                //const subname = @as(*field.type, @constCast(@alignCast(@ptrCast(field.default_value)))).*.name.?;
+                @compileLog(field.type);
+                @compileError("Unsupported type in StructSerializer");
+            },
+        }
+    }
+
+    return size;
+}
+
+fn getStructData(data: anytype, mem: []u8) []u8 {
+    const struct_type = @TypeOf(data);
+    const @"spacetime_10.0__table_" = std.meta.fields(struct_type)[std.meta.fieldIndex(struct_type, spacetime.MagicStruct).?].type;
+
+    const fields = std.meta.fields(@TypeOf(data));
+    var offset_mem = mem;
+    inline for(fields) |field| {
+        switch(field.type) {
+            []const u8 => {
+                const val = @field(data, field.name);
+                std.mem.bytesAsValue(u32, offset_mem[0..4]).* = val.len;
+                std.mem.copyForwards(u8, offset_mem[4..], val);
+                offset_mem = offset_mem[4 + val.len ..];
+            },
+            u32 => {
+                const val = @field(data, field.name);
+                std.mem.bytesAsValue(u32, offset_mem[0..4]).* = val;
+                offset_mem = offset_mem[4..];
+            },
+            u64 => {
+                const val = @field(data, field.name);
+                std.mem.bytesAsValue(u64, offset_mem[0..4]).* = val;
+                offset_mem = offset_mem[8..];
+            },
+            f32 => {
+                const val = @field(data, field.name);
+                std.mem.bytesAsValue(f32, offset_mem[0..4]).* = val;
+                offset_mem = offset_mem[4..];
+            },
+            @"spacetime_10.0__table_" => {},
+            else => blk: {
+                if(@typeInfo(field.type) == .@"struct" and std.meta.fieldIndex(field.type, spacetime.MagicStruct) != null) {
+                    offset_mem = getStructData(@field(data, field.name), offset_mem);
+                    break :blk;
+                }
+                @compileLog(field.type);
+                @compileError("Unsupported type in StructSerializer");
+            },
+        }
+    }
+    return offset_mem;
+}
+
 pub fn StructSerializer(struct_type: type) fn(std.mem.Allocator, struct_type) std.mem.Allocator.Error![]u8 {
-
-    const @"spacetime_10.0__table_" = std.meta.fields(struct_type)[std.meta.fieldIndex(struct_type, "spacetime_10.0__table_").?].type;
-
     return struct {
         pub fn serialize(allocator: std.mem.Allocator, data: struct_type) ![]u8 {
-            const fields = std.meta.fields(@TypeOf(data));
-            var size: usize = 0;
-            inline for(fields) |field| {
-                switch(field.type) {
-                    []const u8 => {
-                        const val = @field(data, field.name);
-                        size += 4 + val.len;
-                    },
-                    u32 => {
-                        size += 4;
-                    },
-                    u64 => {
-                        size += 8;
-                    },
-                    @"spacetime_10.0__table_" => {},
-                    else => {
-                        @compileLog(field.type);
-                        @compileError("Unsupported type in StructSerializer");
-                    },
-                }
-            }
+            const size: usize = getStructSize(data);
             const mem = try allocator.alloc(u8, size);
-            var offset_mem = mem;
-            inline for(fields) |field| {
-                switch(field.type) {
-                    []const u8 => {
-                        const val = @field(data, field.name);
-                        std.mem.bytesAsValue(u32, offset_mem[0..4]).* = val.len;
-                        std.mem.copyForwards(u8, offset_mem[4..], val);
-                        offset_mem = offset_mem[4 + val.len ..];
-                    },
-                    u32 => {
-                        const val = @field(data, field.name);
-                        std.mem.bytesAsValue(u32, offset_mem[0..4]).* = val;
-                        offset_mem = offset_mem[4..];
-                    },
-                    u64 => {
-                        const val = @field(data, field.name);
-                        std.mem.bytesAsValue(u64, offset_mem[0..4]).* = val;
-                        offset_mem = offset_mem[8..];
-                    },
-                    @"spacetime_10.0__table_" => {},
-                    else => @compileError("Unsupported type in StructSerializer"),
-                }
-            }
+            _ = getStructData(data, mem);
             return mem;
         }
     }.serialize;
@@ -186,7 +221,7 @@ pub fn StructSerializer(struct_type: type) fn(std.mem.Allocator, struct_type) st
 
 pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[]const u8) std.mem.Allocator.Error!*struct_type {
 
-    const @"spacetime_10.0__table_" = std.meta.fields(struct_type)[std.meta.fieldIndex(struct_type, "spacetime_10.0__table_").?].type;
+    const @"spacetime_10.0__table_" = std.meta.fields(struct_type)[std.meta.fieldIndex(struct_type, spacetime.MagicStruct).?].type;
     
     return struct {
         pub fn deserialize(allocator: std.mem.Allocator, data: *[]const u8) std.mem.Allocator.Error!*struct_type {
@@ -209,8 +244,19 @@ pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[
                         @field(ret.*, field.name) = std.mem.bytesAsValue(u64, offset_mem[0..4]).*;
                         offset_mem = offset_mem[8..];
                     },
+                    f32 => {
+                        @field(ret.*, field.name) = std.mem.bytesAsValue(f32, offset_mem[0..4]).*;
+                        offset_mem = offset_mem[4..];
+                    },
                     @"spacetime_10.0__table_" => {},
-                    else => @compileError("Unsupported type in StructDeserializer"),
+                    else => blk: {
+                        if(@typeInfo(field.type) == .@"struct" and std.meta.fieldIndex(field.type, spacetime.MagicStruct) != null) {
+                            @field(ret.*, field.name) = (try StructDeserializer(field.type)(allocator, &offset_mem)).*;
+                            break :blk;
+                        }
+                        @compileLog(field.type);
+                        @compileError("Unsupported type in StructDeserializer");
+                    },
                 }
             }
             data.* = offset_mem;
@@ -222,7 +268,7 @@ pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[
 pub fn Table2Struct(comptime table_type: type) type {
 
     const fields = std.meta.fields(table_type);
-    const field = fields[std.meta.fieldIndex(table_type, "spacetime_10.0__table_").?];
+    const field = fields[std.meta.fieldIndex(table_type, spacetime.MagicStruct).?];
     const struct_type = @as(*const field.type, @alignCast(@ptrCast(field.default_value.?))).*;
     const table_name: []const u8 = struct_type.name.?;
     

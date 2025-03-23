@@ -148,10 +148,8 @@ fn serialize_table_access(array: *std.ArrayList(u8), val: TableAccess) !void {
 
 fn serialize_product_type_element(array: *std.ArrayList(u8), val: ProductTypeElement) !void {
     try array.appendSlice(&[_]u8{ 0 });
-    //if(val.name) |name| {
     try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(val.name.len))));
     try array.appendSlice(val.name);
-    //}
     try serialize_algebraic_type(array, val.algebraic_type);
 }
 
@@ -167,6 +165,10 @@ fn serialize_algebraic_type(array: *std.ArrayList(u8), val: AlgebraicType) !void
         AlgebraicType.Product => |product| {
             try array.appendSlice(&[_]u8{@intFromEnum(val)});
             try serialize_product_type(array, product);
+        },
+        AlgebraicType.Ref => |ref| {
+            try array.appendSlice(&[_]u8{@intFromEnum(val)});
+            try array.appendSlice(&std.mem.toBytes(ref.inner));
         },
         else => try array.appendSlice(&[_]u8{@intFromEnum(val)}),
     }
