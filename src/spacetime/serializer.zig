@@ -65,9 +65,9 @@ fn serialize_raw_reducer_def_v9(array: *std.ArrayList(u8), val: RawReducerDefV9)
     for(val.params.elements) |element| {
         try serialize_product_type_element(array, element);
     }
-    try array.appendSlice(&[_]u8{ @intFromBool(val.lifecycle == null) });
-    if(val.lifecycle) |lifecycle| {
-        try serialize_lifecycle(array, lifecycle);
+    try array.appendSlice(&[_]u8{ @intFromBool(val.lifecycle == .None) });
+    if(val.lifecycle != .None) {
+        try serialize_lifecycle(array, val.lifecycle);
     }
 }
 
@@ -146,6 +146,22 @@ fn serialize_table_access(array: *std.ArrayList(u8), val: TableAccess) !void {
     try array.appendSlice(&[_]u8{@intFromEnum(val)});
 }
 
+fn serialize_sum_type_variant(array: *std.ArrayList(u8), val: SumTypeVariant) !void {
+    try array.appendSlice(&[_]u8{ @intFromBool(val.name == null) });
+    if(val.name) |name| {
+        try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(name.len))));
+        try array.appendSlice(name);
+    }
+    try serialize_algebraic_type(array, val.algebraic_type);
+}
+
+fn serialize_sum_type(array: *std.ArrayList(u8), val: SumType) std.mem.Allocator.Error!void {
+    try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(val.variants.len))));
+    for(val.variants) |variant| {
+        try serialize_sum_type_variant(array, variant);
+    }
+}
+
 fn serialize_product_type_element(array: *std.ArrayList(u8), val: ProductTypeElement) !void {
     try array.appendSlice(&[_]u8{ 0 });
     try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(val.name.len))));
@@ -169,6 +185,10 @@ fn serialize_algebraic_type(array: *std.ArrayList(u8), val: AlgebraicType) !void
         AlgebraicType.Ref => |ref| {
             try array.appendSlice(&[_]u8{@intFromEnum(val)});
             try array.appendSlice(&std.mem.toBytes(ref.inner));
+        },
+        AlgebraicType.Sum => |sum| {
+            try array.appendSlice(&[_]u8{@intFromEnum(val)});
+            try serialize_sum_type(array, sum);
         },
         else => try array.appendSlice(&[_]u8{@intFromEnum(val)}),
     }

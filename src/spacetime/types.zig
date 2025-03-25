@@ -127,13 +127,42 @@ pub const Lifecycle = enum {
     Init,
     OnConnect,
     OnDisconnect,
+    None,
 };
 
+fn getUnionSize(data: anytype) usize {
+    //const fields = std.meta.fields(@TypeOf(data));
+    var size: usize = 0;
+
+    switch(data) {
+        inline else => |field| {
+            switch(@TypeOf(field)) {
+                []const u8 => {
+                    const val = @field(data, field.name);
+                    size = @max(size, 4 + val.len);
+                },
+                i64, u32, u64, f32 => {
+                    size = @max(size, @sizeOf(field.type));
+                },
+                else => {
+                    switch(@typeInfo(@TypeOf(field))) {
+                        .@"struct" => {
+                            size = @max(size, getStructSize(field));
+                        },
+                        .@"union" => {
+                            size = @max(size, 1 + getUnionSize(field));
+                        },
+                        else => @compileError("Unsupported type in getUnionSize"),
+                    }
+                }
+            }
+        }
+    }
+
+    return size;
+}
+
 fn getStructSize(data: anytype) usize {
-    const struct_type = @TypeOf(data);
-
-    const @"spacetime_10.0__table_" = utils.getMemberDefaultType(struct_type, spacetime.MagicStruct);
-
     const fields = std.meta.fields(@TypeOf(data));
     var size: usize = 0;
     inline for(fields) |field| {
@@ -142,23 +171,18 @@ fn getStructSize(data: anytype) usize {
                 const val = @field(data, field.name);
                 size += 4 + val.len;
             },
-            u32 => {
-                size += 4;
+            i64, u32, u64, f32 => {
+                size += @sizeOf(field.type);
             },
-            u64 => {
-                size += 8;
-            },
-            f32 => {
-                size += 4;
-            },
-            @"spacetime_10.0__table_" => {},
             else => blk: {
-                if(@typeInfo(field.type) == .@"struct" and std.meta.fieldIndex(field.type, spacetime.MagicStruct) != null) {
+                if(@typeInfo(field.type) == .@"struct") {
                     size += getStructSize(@field(data, field.name));
                     break :blk;
+                } else if(@typeInfo(field.type) == .@"union") {
+                    size += 1 + getUnionSize(@field(data, field.name));
+                    break :blk;
                 }
-                @compileLog(field.type);
-                @compileError("Unsupported type in StructSerializer");
+                @compileError("Unsupported type in getStructSize");
             },
         }
     }
@@ -166,10 +190,19 @@ fn getStructSize(data: anytype) usize {
     return size;
 }
 
-fn getStructData(data: anytype, mem: []u8) []u8 {
-    const struct_type = @TypeOf(data);
-    const @"spacetime_10.0__table_" = utils.getMemberDefaultType(struct_type, spacetime.MagicStruct);
+fn getUnionData(data: anytype, mem: []u8) []u8 {
+    var offset_mem = mem;
+    switch(data) {
+        inline else => |field| {
+            std.mem.bytesAsValue(u8, offset_mem[0..@sizeOf(u8)]).* = @intFromEnum(data);
+            offset_mem = offset_mem[@sizeOf(u8)..];
+            offset_mem = getStructData(field, offset_mem);
+        },
+    }
+    return offset_mem;
+}
 
+fn getStructData(data: anytype, mem: []u8) []u8 {
     const fields = std.meta.fields(@TypeOf(data));
     var offset_mem = mem;
     inline for(fields) |field| {
@@ -180,25 +213,17 @@ fn getStructData(data: anytype, mem: []u8) []u8 {
                 std.mem.copyForwards(u8, offset_mem[4..], val);
                 offset_mem = offset_mem[4 + val.len ..];
             },
-            u32 => {
+            i32, i64, u32, u64, f32 => {
                 const val = @field(data, field.name);
-                std.mem.bytesAsValue(u32, offset_mem[0..4]).* = val;
-                offset_mem = offset_mem[4..];
+                std.mem.bytesAsValue(field.type, offset_mem[0..@sizeOf(field.type)]).* = val;
+                offset_mem = offset_mem[@sizeOf(field.type)..];
             },
-            u64 => {
-                const val = @field(data, field.name);
-                std.mem.bytesAsValue(u64, offset_mem[0..4]).* = val;
-                offset_mem = offset_mem[8..];
-            },
-            f32 => {
-                const val = @field(data, field.name);
-                std.mem.bytesAsValue(f32, offset_mem[0..4]).* = val;
-                offset_mem = offset_mem[4..];
-            },
-            @"spacetime_10.0__table_" => {},
             else => blk: {
-                if(@typeInfo(field.type) == .@"struct" and std.meta.fieldIndex(field.type, spacetime.MagicStruct) != null) {
+                if(@typeInfo(field.type) == .@"struct") {
                     offset_mem = getStructData(@field(data, field.name), offset_mem);
+                    break :blk;
+                } else if(@typeInfo(field.type) == .@"union") {
+                    offset_mem = getUnionData(@field(data, field.name), offset_mem);
                     break :blk;
                 }
                 @compileLog(field.type);
@@ -220,9 +245,52 @@ pub fn StructSerializer(struct_type: type) fn(std.mem.Allocator, struct_type) st
     }.serialize;
 } 
 
+pub fn UnionDeserializer(union_type: type) fn(allocator: std.mem.Allocator, *[]const u8) std.mem.Allocator.Error!*union_type {
+    return struct {
+        pub fn deserialize(allocator: std.mem.Allocator, data: *[]const u8) std.mem.Allocator.Error!*union_type {
+            const ret = try allocator.create(union_type);
+            var offset_mem = data.*;
+            
+            const tagType = u8;
+
+            const tag: std.meta.Tag(union_type) = @enumFromInt(std.mem.bytesAsValue(tagType, offset_mem[0..@sizeOf(tagType)]).*);
+            offset_mem = offset_mem[@sizeOf(tagType)..];
+            switch(tag) {
+                inline else => |union_field| {
+                    const field = std.meta.fields(union_type)[@intFromEnum(union_field)];
+                    switch(field.type) {
+                        []const u8 => {
+                            const len = std.mem.bytesAsValue(u32, offset_mem[0..4]).*;
+                            const str = try allocator.dupe(u8, offset_mem[4..(4+len)]);
+                            @field(ret.*, field.name) = str;
+                            offset_mem = offset_mem[4+len ..];
+                        },
+                        u32, u64, i32, i64, f32 => {
+                            @field(ret.*, field.name) = std.mem.bytesAsValue(field.type, offset_mem[0..@sizeOf(field.type)]).*;
+                            offset_mem = offset_mem[@sizeOf(field.type)..];
+                        },
+                        else => blk: {
+                            if(@typeInfo(field.type) == .@"struct") {
+                                @field(ret.*, field.name) = (try StructDeserializer(field.type)(allocator, &offset_mem)).*;
+                                break :blk;
+                            } else if(@typeInfo(field.type) == .@"union") {
+                                @field(ret.*, field.name) = (try UnionDeserializer(field.type)(allocator, &offset_mem)).*;
+                                break :blk;
+                            }
+                            @compileLog(field.type);
+                            @compileError("Unsupported type in StructDeserializer");
+                        },
+                    }
+                }
+            }
+
+            data.* = offset_mem;
+            return ret;
+        }
+    }.deserialize;
+} 
+
 pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[]const u8) std.mem.Allocator.Error!*struct_type {
-    const @"spacetime_10.0__table_" = utils.getMemberDefaultType(struct_type, spacetime.MagicStruct);
-    
     return struct {
         pub fn deserialize(allocator: std.mem.Allocator, data: *[]const u8) std.mem.Allocator.Error!*struct_type {
             const ret = try allocator.create(struct_type);
@@ -236,22 +304,16 @@ pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[
                         @field(ret.*, field.name) = str;
                         offset_mem = offset_mem[4+len ..];
                     },
-                    u32 => {
-                        @field(ret.*, field.name) = std.mem.bytesAsValue(u32, offset_mem[0..4]).*;
-                        offset_mem = offset_mem[4..];
+                    u32, u64, i32, i64, f32 => {
+                        @field(ret.*, field.name) = std.mem.bytesAsValue(field.type, offset_mem[0..@sizeOf(field.type)]).*;
+                        offset_mem = offset_mem[@sizeOf(field.type)..];
                     },
-                    u64 => {
-                        @field(ret.*, field.name) = std.mem.bytesAsValue(u64, offset_mem[0..4]).*;
-                        offset_mem = offset_mem[8..];
-                    },
-                    f32 => {
-                        @field(ret.*, field.name) = std.mem.bytesAsValue(f32, offset_mem[0..4]).*;
-                        offset_mem = offset_mem[4..];
-                    },
-                    @"spacetime_10.0__table_" => {},
                     else => blk: {
-                        if(@typeInfo(field.type) == .@"struct" and std.meta.fieldIndex(field.type, spacetime.MagicStruct) != null) {
+                        if(@typeInfo(field.type) == .@"struct") {
                             @field(ret.*, field.name) = (try StructDeserializer(field.type)(allocator, &offset_mem)).*;
+                            break :blk;
+                        } else if(@typeInfo(field.type) == .@"union") {
+                            @field(ret.*, field.name) = (try UnionDeserializer(field.type)(allocator, &offset_mem)).*;
                             break :blk;
                         }
                         @compileLog(field.type);
@@ -265,9 +327,15 @@ pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[
     }.deserialize;
 } 
 
-pub fn Table2ORM(comptime table_type: type) type {
-    const table_name = utils.getMemberDefaultValue(table_type, "name");
-    const struct_type = utils.getMemberDefaultValue(table_type, "layout");
+pub fn Table2ORM(comptime table_name: []const u8) type {
+    const table = blk: {
+        for(spacetime.tables) |table| {
+            if(std.mem.eql(u8, table_name, table.name.?)) {
+                break :blk table;
+            }
+        }
+    };
+    const struct_type = table.schema;
 
     return struct {
         allocator: std.mem.Allocator,
@@ -343,7 +411,7 @@ pub fn Table2ORM(comptime table_type: type) type {
 pub const Local = struct {
     allocator: std.mem.Allocator,
 
-    pub fn get(self: @This(), table: anytype) Table2ORM(table) {
+    pub fn get(self: @This(), comptime table: []const u8) Table2ORM(table) {
         return .{
             .allocator = self.allocator,
         };
@@ -362,7 +430,7 @@ pub const ReducerFn = fn(*ReducerContext) void;
 pub const RawReducerDefV9 = struct {
     name: RawIdentifier,
     params: ProductType,
-    lifecycle: ?Lifecycle,
+    lifecycle: Lifecycle,
 };
 
 pub const RawScopedTypeNameV9 = struct {
