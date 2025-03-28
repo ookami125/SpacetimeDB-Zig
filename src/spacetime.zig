@@ -47,73 +47,121 @@ pub extern "spacetime_10.0" fn console_log(
     message_len: usize,
 ) void;
 
-pub fn print(fmt: []const u8) void {
-    console_log(2, null, 0, null, 0, 0, fmt.ptr, fmt.len);
-}
-
-pub fn debug_print(comptime fmt: []const u8, args: anytype) void {
-    var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    std.fmt.format(fbs.writer().any(), fmt, args) catch {
-        return print("Expand the buf in debug_print!");
+pub fn logFn(comptime level: std.log.Level, comptime _: @TypeOf(.enum_literal), comptime fmt: []const u8, args: anytype) void {
+    const allocator = std.heap.wasm_allocator;
+    const msg = std.fmt.allocPrint(allocator, fmt, args) catch "debug_print allocation failure!";
+    defer allocator.free(msg);
+    const outLevel = switch(level) {
+        .err => 0,
+        .warn => 1,
+        .info => 2,
+        .debug => 3,
     };
-    return print(fbs.getWritten());
+    console_log(outLevel, null, 0, null, 0, 0, msg.ptr, msg.len);
+    
 }
 
 pub const BytesSink = extern struct { inner: u32 };
 pub const BytesSource = extern struct { inner: u32 };
+pub const TableId = extern struct { _inner: u32, };
+pub const RowIter = extern struct { _inner: u32, pub const INVALID = RowIter{ ._inner = 0}; };
+pub const IndexId = extern struct{ _inner: u32 };
+pub const ColId = extern struct { _inner: u16 };
+
+pub const Identity = struct {
+    __identity__: u256,
+};
+
+pub const Timestamp = struct {
+    __timestamp_micros_since_unix_epoch__: i64
+};
+
+pub const TimeDuration = struct {
+    __time_duration_micros__: i64
+};
+
+pub const ScheduleAt = union(enum){
+    Interval: TimeDuration,
+    Time: Timestamp,
+};
+
+pub const ConnectionId = struct {
+    __connection_id__: u128,
+};
+
+pub const SpacetimeValue = enum(u1) {
+    OK = 0,
+    EXHAUSTED = 1,
+};
+
+pub const SpacetimeError = error {
+    HOST_CALL_FAILURE,
+    NOT_IN_TRANSACTION,
+    BSATN_DECODE_ERROR,
+    NO_SUCH_TABLE,
+    NO_SUCH_INDEX,
+    NO_SUCH_ITER,
+    NO_SUCH_BYTES,
+    NO_SPACE,
+    BUFFER_TOO_SMALL,
+    UNIQUE_ALREADY_EXISTS,
+    SCHEDULE_AT_DELAY_TOO_LONG,
+    INDEX_NOT_UNIQUE,
+    NO_SUCH_ROW,
+};
 
 pub extern "spacetime_10.0" fn bytes_sink_write(sink: BytesSink, buffer_ptr: [*c]const u8, buffer_len_ptr: *usize) u16;
 pub extern "spacetime_10.0" fn bytes_source_read(source: BytesSource, buffer_ptr: [*c]u8, buffer_len_ptr: *usize) i16;
 
-pub const TableId = extern struct { _inner: u32, };
 pub extern "spacetime_10.0" fn table_id_from_name(name: [*c]const u8, name_len: usize, out: *TableId) u16;
+pub extern "spacetime_10.0" fn index_id_from_name(name_ptr: [*c]const u8, name_len: usize, out: *IndexId) u16;
+
 pub extern "spacetime_10.0" fn datastore_insert_bsatn(table_id: TableId, row_ptr: [*c]const u8, row_len_ptr: *usize) u16;
-
-pub const RowIter = extern struct { _inner: u32, pub const INVALID = RowIter{ ._inner = 0}; };
 pub extern "spacetime_10.0" fn row_iter_bsatn_advance(iter: RowIter, buffer_ptr: [*c]u8, buffer_len_ptr: *usize) i16;
+
 pub extern "spacetime_10.0" fn datastore_table_scan_bsatn(table_id: TableId, out: [*c]RowIter) u16;
+pub extern "spacetime_10.0" fn datastore_index_scan_range_bsatn( index_id: IndexId, prefix_ptr: [*c]const u8, prefix_len: usize, prefix_elems: ColId, rstart_ptr: [*c]const u8, rstart_len: usize, rend_ptr: [*c]const u8, rend_len: usize, out: *RowIter) u16;
+pub extern "spacetime_10.0" fn row_iter_bsatn_close(iter: RowIter) u16;
 
-pub const ScheduleAt = union(enum){
-    Interval: struct{ __time_duration_micros__: i64 },
-    Time: struct{ __timestamp_micros_since_unix_epoch__: i64 },
-};
+pub extern "spacetime_10.0" fn datastore_delete_by_index_scan_range_bsatn(index_id: IndexId, prefix_ptr: [*c]const u8, prefix_len: usize, prefix_elems: ColId, rstart_ptr: [*c]const u8, rstart_len: usize, rend_ptr: [*c]const u8, rend_len: usize, out: [*c]u32) u16;
 
-pub const EXHAUSTED = -1;
-pub const OK = 0;
-pub const NO_SUCH_ITER = 6;
-pub const NO_SUCH_BYTES = 8;
-pub const NO_SPACE = 9;
-pub const BUFFER_TOO_SMALL = 11;
+pub fn retMap(errVal: i17) !SpacetimeValue {
+    return switch(errVal) {
+        -1 => SpacetimeValue.EXHAUSTED,
+        0 => SpacetimeValue.OK,
+        1 => SpacetimeError.HOST_CALL_FAILURE,
+        2 => SpacetimeError.NOT_IN_TRANSACTION,
+        3 => SpacetimeError.BSATN_DECODE_ERROR,
+        4 => SpacetimeError.NO_SUCH_TABLE,
+        5 => SpacetimeError.NO_SUCH_INDEX,
+        6 => SpacetimeError.NO_SUCH_ITER,
+        8 => SpacetimeError.NO_SUCH_BYTES,
+        9 => SpacetimeError.NO_SPACE,
+        11 => SpacetimeError.BUFFER_TOO_SMALL,
+        12 => SpacetimeError.UNIQUE_ALREADY_EXISTS,
+        13 => SpacetimeError.SCHEDULE_AT_DELAY_TOO_LONG,
+        14 => SpacetimeError.INDEX_NOT_UNIQUE,
+        15 => SpacetimeError.NO_SUCH_ROW,
+        else => unreachable,
+    };
+}
+
+pub const ReducerError = SpacetimeError || std.mem.Allocator.Error || std.fmt.BufPrintError;
 
 pub fn read_bytes_source(source: BytesSource, buf: []u8) ![]u8 {
-    const INVALID: i16 = NO_SUCH_BYTES;
-
     var buf_len = buf.len;
-    const ret = bytes_source_read(source, @ptrCast(buf), &buf_len);
-    switch(ret) {
-        -1, 0 => {},
-        INVALID => return error.InvalidSource,
-        else => unreachable,
-    }
-
+    _ = try retMap(bytes_source_read(source, @ptrCast(buf), &buf_len));
     return buf[0..buf_len];
 }
 
-pub fn write_to_sink(sink: BytesSink, _buf: []const u8) void {
+pub fn write_to_sink(sink: BytesSink, _buf: []const u8) !void {
     var buf: []const u8 = _buf;
     while(true) {
         const len: *usize = &buf.len;
-        switch(bytes_sink_write(sink, buf.ptr, len)) {
-            0 => {
-                buf = buf[len.*..];
-                if(buf.len == 0) {
-                    break;
-                }
-            },
-            NO_SUCH_BYTES => @panic("invalid sink passed"),
-            NO_SPACE => @panic("no space left at sink"),
-            else => unreachable,
+        _ = try retMap(bytes_sink_write(sink, buf.ptr, len));
+        buf = buf[len.*..];
+        if(buf.len == 0) {
+            break;
         }
     }
 }
@@ -133,11 +181,25 @@ pub const StructDecl = struct {
 fn spacetimeType2ZigType(t: AlgebraicType) type {
     return switch (t) {
         .String => []const u8,
-        .U32 => u32,
-        .U64 => u64,
+        .Bool => bool,
+        .I8 => i8,
+        .U8 => u8,
+        .I16 => i16,
+        .U16 => u16,
         .I32 => i32,
+        .U32 => u32,
         .I64 => i64,
-        else => unreachable,
+        .U64 => u64,
+        .I128 => i128,
+        .U128 => u128,
+        .I256 => i256,
+        .U256 => u256,
+        .F32 => f32,
+        .F64 => f64,
+        else => {
+            @compileLog(t);
+            @compileError("spacetimeType2ZigType: unsupported type!");
+        },
     };
 }
 
@@ -146,23 +208,54 @@ const StructFieldImpl = struct {
     type: AlgebraicType,
 };
 
-pub fn readArg(allocator: std.mem.Allocator, args: BytesSource, comptime t: AlgebraicType) !spacetimeType2ZigType(t) {
+pub fn readArg(allocator: std.mem.Allocator, args: BytesSource, comptime t: type) !t {
     switch(t) {
-        .String => {
+        []const u8 => {
             var maxbuf: [4]u8 = undefined;
             const len_buf = try read_bytes_source(args, &maxbuf);
             const len: usize = std.mem.bytesToValue(u32, len_buf);
             const string_buf = try allocator.alloc(u8, len);
             return try read_bytes_source(args, string_buf);
         },
-        .U32, .U64, .I32, .I64 => {
-            const read_type = spacetimeType2ZigType(t);
+        i8, u8, i16, u16, i32, u32,
+        i64, u64, i128, u128, i256, u256,
+        f32, f64 => {
+            const read_type = t;
             var maxbuf: [@sizeOf(read_type)]u8 = undefined;
             const len_buf = try read_bytes_source(args, &maxbuf);
-            const len: read_type = std.mem.bytesToValue(read_type, len_buf);
-            return len;
+            return std.mem.bytesToValue(t, len_buf);
         },
-        else => @compileError("unsupported type in readArg!"),
+        else => {
+            switch(@typeInfo(t)) {
+                .@"struct" => {
+                    const fields = std.meta.fields(t);
+                    var temp: t = undefined;
+                    inline for(fields) |field| {
+                        @field(temp, field.name) = try readArg(allocator, args, field.type);
+                    }
+                    return temp;
+                },
+                .@"union" => {
+                    const tagType = std.meta.Tag(t);
+                    const intType = u8;
+                    const tag: tagType = @enumFromInt(try readArg(allocator, args, intType));
+                    var temp: t = undefined;//@unionInit(t, @tagName(tag), undefined);
+                    switch(tag) {
+                        inline else => |tag_field| {
+                            const field = std.meta.fields(t)[@intFromEnum(tag_field)];
+                            @field(temp, field.name) = (try readArg(allocator, args, field.type));
+
+                        }
+                    }
+                    //@field(temp, field.name) = try readArg(allocator, args, @TypeOf(field));  
+                    return temp;
+                },
+                else => {
+                    @compileLog(t);
+                    @compileError("unsupported type in readArg!");
+                }
+            }
+        },
     }
 }
 
@@ -175,7 +268,7 @@ pub fn zigTypeToSpacetimeType(comptime param: ?type) AlgebraicType {
         u32 => .{ .U32 = {}, },
         u64 => .{ .U64 = {}, },
         f32 => .{ .F32 = {}, },
-        //Identity => .{ .U256 = {}, },
+        u256 => .{ .U256 = {}, },
         else => blk: {
             if(@typeInfo(param.?) == .@"struct") {
                 var elements: []const ProductTypeElement = &.{};
@@ -192,6 +285,23 @@ pub fn zigTypeToSpacetimeType(comptime param: ?type) AlgebraicType {
                 break :blk .{
                     .Product = ProductType{
                         .elements = elements
+                    }
+                };
+            } else if(@typeInfo(param.?) == .@"union") {
+                var variants: []const SumTypeVariant = &.{};
+                const fields = std.meta.fields(param.?);
+                for(fields) |field| {
+                    variants = variants ++ &[_]SumTypeVariant{
+                        SumTypeVariant{
+                            .name = field.name,
+                            .algebraic_type = zigTypeToSpacetimeType(field.type),
+                        },
+                    };
+                }
+
+                break :blk .{
+                    .Sum = SumType{
+                        .variants = variants
                     }
                 };
             }
@@ -277,6 +387,27 @@ pub fn addStructImpl(structImpls: *[]const StructImpl, layout: anytype) u32 {
     return structImpls.len - 1;
 }
 
+pub fn getStructImplOrType(structImpls: []const StructImpl, layout: type) AlgebraicType {
+    const name = blk: {
+        var temp: []const u8 = @typeName(layout);
+        if(std.mem.lastIndexOf(u8, temp, ".")) |idx|
+            temp = temp[idx+1..];
+        break :blk temp;
+    };
+    
+    inline for(structImpls, 0..) |structImpl, i| {
+        if(std.mem.eql(u8, structImpl.name, name)) {
+            return .{
+                .Ref = AlgebraicTypeRef{
+                    .inner = i,
+                },
+            };
+        }
+    }
+
+    return zigTypeToSpacetimeType(layout);
+}
+
 pub fn compile(comptime moduleTables : []const Table, comptime moduleReducers : []const Reducer) !RawModuleDefV9 {
     var def : RawModuleDefV9 = undefined;
     _ = &def;
@@ -290,22 +421,67 @@ pub fn compile(comptime moduleTables : []const Table, comptime moduleReducers : 
     var structDecls: []const StructImpl = &[_]StructImpl{};
 
     inline for(moduleTables) |table| {
-        //const table: @as(*const field.type, @alignCast(@ptrCast(field.default_value))).* = .{};
-        const name: []const u8 = table.name.?;
+        const table_name: []const u8 = table.name.?;
         const table_type: TableType = table.type;
         const table_access: TableAccess = table.access;
         const product_type_ref: AlgebraicTypeRef = AlgebraicTypeRef{
             .inner = addStructImpl(&structDecls, table.schema),
         };
+        const primary_key: []const u16 = blk: {
+            if(table.primary_key) |key| {
+                break :blk &[_]u16{ std.meta.fieldIndex(table.schema, key).?, };
+            }
+            break :blk &[_]u16{};
+        };
+
+        var indexes: []const RawIndexDefV9 = &[_]RawIndexDefV9{};
+        if(table.primary_key) |key| {
+            indexes = indexes ++ &[_]RawIndexDefV9{
+                RawIndexDefV9{
+                    .name = null,
+                    .accessor_name = key,
+                    .algorithm = .{
+                        .BTree = &.{ 0 }
+                    }
+                }
+            };
+        }
+
+        var constraints: []const RawConstraintDefV9 = &[_]RawConstraintDefV9{};
+        if(table.primary_key) |_| {
+            constraints = constraints ++ &[_]RawConstraintDefV9{
+                RawConstraintDefV9{
+                    .name = null,
+                    .data = .{ .unique = .{ .Columns = &.{ primary_key[0] } } },
+                }
+            };
+        }
+
+        const schedule: ?RawScheduleDefV9 = schedule_blk: {
+            if(table.schedule_reducer == null) break :schedule_blk null;
+            const column = column_blk: for(std.meta.fields(table.schema), 0..) |field, i| {
+                if(field.type == ScheduleAt) break :column_blk i;
+            };
+            const resolvedReducer = blk: for(moduleReducers) |reducer| {
+                if(reducer.func == table.schedule_reducer.?.func)
+                    break :blk reducer;
+            };
+            break :schedule_blk RawScheduleDefV9{
+                .name = table_name ++ "_sched",
+                .reducer_name = resolvedReducer.name.?,
+                .scheduled_at_column = column,
+            };
+        };
+
         tableDefs = tableDefs ++ &[_]RawTableDefV9{
             .{
-                .name = name,
+                .name = table_name,
                 .product_type_ref = product_type_ref,
-                .primary_key = &[_]u16{},
-                .indexes = &[_]RawIndexDefV9{},
-                .constraints = &[_]RawConstraintDefV9{},
+                .primary_key = primary_key,
+                .indexes = indexes,
+                .constraints = constraints,
                 .sequences = &[_]RawSequenceDefV9{},
-                .schedule = null,
+                .schedule = schedule,
                 .table_type = table_type,
                 .table_access = table_access,
             }
@@ -356,7 +532,7 @@ pub fn compile(comptime moduleTables : []const Table, comptime moduleReducers : 
             params = params ++ &[_]ProductTypeElement{
                 .{
                     .name = param_name,
-                    .algebraic_type = zigTypeToSpacetimeType(param.type),
+                    .algebraic_type = getStructImplOrType(structDecls, param.type.?),
                 }
             };
         }
@@ -382,7 +558,7 @@ pub fn compile(comptime moduleTables : []const Table, comptime moduleReducers : 
     };
 }
 
-pub fn callReducer(comptime mdef: []const Reducer, id: usize, args: anytype) void {
+pub fn callReducer(comptime mdef: []const Reducer, id: usize, args: anytype) ReducerError!void {
     inline for(mdef, 0..) |field, i| {
         if(id == i) {
             const func = field.func_type;
@@ -392,8 +568,7 @@ pub fn callReducer(comptime mdef: []const Reducer, id: usize, args: anytype) voi
             }
         
             const name: []const u8 = field.name.?;
-            var buf: [128]u8 = undefined;
-            print(std.fmt.bufPrint(&buf, "invalid number of args passed to {s}, expected {} got {}", .{name, @typeInfo(func).@"fn".params.len, std.meta.fields(@TypeOf(args)).len}) catch "!!!Error while printing last error!!!");
+            std.log.err("invalid number of args passed to {s}, expected {} got {}", .{name, @typeInfo(func).@"fn".params.len, std.meta.fields(@TypeOf(args)).len});
             @panic("invalid number of args passed to func");
         }
     }
@@ -401,7 +576,7 @@ pub fn callReducer(comptime mdef: []const Reducer, id: usize, args: anytype) voi
 
 pub fn PrintModule(data: anytype) void {
     var buf: [64]u8 = undefined;
-    print(std.fmt.bufPrint(&buf, "\"{s}\": {{", .{@typeName(@TypeOf(data))}) catch "<Error>");
+    std.log.debug(std.fmt.bufPrint(&buf, "\"{s}\": {{", .{@typeName(@TypeOf(data))}) catch "<Error>");
     switch(@TypeOf(data)) {
         RawModuleDefV9 => {
             PrintModule(data.typespace);
@@ -457,16 +632,16 @@ pub fn PrintModule(data: anytype) void {
             }
         },
         []const u8 => {
-            print(std.fmt.bufPrint(&buf, "\"{s}\"", .{data}) catch "<Error>");
+            std.log.debug(std.fmt.bufPrint(&buf, "\"{s}\"", .{data}) catch "<Error>");
         },
         u32 => {
-            print(std.fmt.bufPrint(&buf, "{}", .{data}) catch "<Error>");
+            std.log.debug(std.fmt.bufPrint(&buf, "{}", .{data}) catch "<Error>");
         },
         else => {
-            print("\"...\"");
+            std.log.debug("\"...\"");
         },
     }
-    print("},");
+    std.log.debug("},");
 }
 
 pub const Param = struct {
@@ -487,6 +662,11 @@ pub const Table = struct {
     schema: type,
     type: TableType = .User,
     access: TableAccess = .Private,
+    primary_key: ?[]const u8 = null,
+    schedule_reducer: ?*const Reducer = null,
+    indexes: ?[]const []const u8 = null,
+    unique: ?[]const []const u8 = null,
+    autoinc: ?[]const []const u8 = null,
 };
 
 pub const reducers: []const Reducer = blk: {
@@ -521,6 +701,11 @@ pub const tables: []const Table = blk: {
                     .access = field.access,
                     .schema = field.schema,
                     .name = field.name orelse decl.name,
+                    .primary_key = field.primary_key,
+                    .schedule_reducer = field.schedule_reducer,
+                    .indexes = field.indexes,
+                    .autoinc = field.autoinc,
+                    .unique = field.unique,
                 }
             };
         }
@@ -530,7 +715,7 @@ pub const tables: []const Table = blk: {
 
 pub export fn __describe_module__(description: BytesSink) void {
     const allocator = std.heap.wasm_allocator;
-    print("Hello from Zig!");
+    std.log.debug("Hello from Zig!", .{});
     
     var moduleDefBytes = std.ArrayList(u8).init(allocator);
     defer moduleDefBytes.deinit();
@@ -543,12 +728,14 @@ pub export fn __describe_module__(description: BytesSink) void {
         @compileError(fmterr);
     };
 
+    //PrintModule(compiledModule);
+
     serialize_module(&moduleDefBytes, compiledModule) catch {
-       print("Allocator Error: Cannot continue!");
+       std.log.err("Allocator Error: Cannot continue!", .{});
        @panic("Allocator Error: Cannot continue!");
     };
 
-    write_to_sink(description, moduleDefBytes.items);
+    write_to_sink(description, moduleDefBytes.items) catch @panic("Failed to write Module Descripton to SpacetimeDB!");
 }
 
 pub export fn __call_reducer__(
@@ -568,9 +755,9 @@ pub export fn __call_reducer__(
     const allocator = std.heap.wasm_allocator;
     
     var ctx: ReducerContext = .{
-        .indentity = std.mem.bytesAsValue(u256, std.mem.sliceAsBytes(&[_]u64{ sender_0, sender_1, sender_2, sender_3})).*,
-        .timestamp = timestamp,
-        .connection_id  = std.mem.bytesAsValue(u128, std.mem.sliceAsBytes(&[_]u64{ conn_id_0, conn_id_1})).*,
+        .sender = std.mem.bytesAsValue(Identity, std.mem.sliceAsBytes(&[_]u64{ sender_0, sender_1, sender_2, sender_3})).*,
+        .timestamp = Timestamp{ .__timestamp_micros_since_unix_epoch__ = @intCast(timestamp), },
+        .connection_id  = std.mem.bytesAsValue(ConnectionId, std.mem.sliceAsBytes(&[_]u64{ conn_id_0, conn_id_1})).*,
         .db = .{
             .allocator = allocator,
         },
@@ -623,15 +810,19 @@ pub export fn __call_reducer__(
             if(args.inner != 0) {
                 inline for(params, 0..) |param, name| {
                     comptime if(name == 0) continue;
-                    @field(constructedArg, utils.itoa(name)) = readArg(allocator, args, zigTypeToSpacetimeType(param.type.?)) catch |err2| {
-                        var buf: [512]u8 = undefined;
-                        print(std.fmt.bufPrint(&buf, "Error: {}", .{err2}) catch "Expand Error Buffer!");
+                    @field(constructedArg, utils.itoa(name)) = readArg(allocator, args, param.type.?) catch |err2| {
+                        std.log.err("Error: {}", .{err2});
                         @panic("blah");
                     };
                 }
             }
 
-            callReducer(reducers, i, constructedArg);
+            callReducer(reducers, i, constructedArg) catch |errRet| {
+                std.log.debug("{s}", .{@errorName(errRet)});
+                if (@errorReturnTrace()) |trace| {
+                    std.debug.dumpStackTrace(trace.*);
+                }
+            };
         }
     }
 

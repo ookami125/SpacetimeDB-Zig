@@ -114,16 +114,42 @@ fn serialize_raw_row_level_security_def_v9(array: *std.ArrayList(u8), val: RawRo
     unreachable;
 }
 
+fn serialize_raw_index_algorithm(array: *std.ArrayList(u8), val: RawIndexAlgorithm) !void {
+    try array.appendSlice(&[_]u8{@intFromEnum(val)});
+    switch(val) {
+        .BTree, .Hash => |deref| {
+            try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(deref.len))));
+            try array.appendSlice(std.mem.sliceAsBytes(deref.ptr[0..deref.len]));
+        },
+        .Direct => unreachable,
+    }
+}
+
 fn serialize_raw_index_def_v9(array: *std.ArrayList(u8), val: RawIndexDefV9) !void {
-    _ = array;
-    _ = val;
-    unreachable;
+    try array.appendSlice(&[_]u8{ @intFromBool(val.name == null) });
+    if(val.name) |name| {
+        try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(name.len))));
+        try array.appendSlice(name);
+    }
+    try array.appendSlice(&[_]u8{ @intFromBool(val.accessor_name == null) });
+    if(val.accessor_name) |accessor_name| {
+        try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(accessor_name.len))));
+        try array.appendSlice(accessor_name);
+    }
+    try serialize_raw_index_algorithm(array, val.algorithm);
 }
 
 fn serialize_raw_constraint_def_v9(array: *std.ArrayList(u8), val: RawConstraintDefV9) !void {
-    _ = array;
-    _ = val;
-    unreachable;
+    try array.appendSlice(&[_]u8{ @intFromBool(val.name == null) });
+    if(val.name) |name| {
+        try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(name.len))));
+        try array.appendSlice(name);
+    }
+    // I have no idea what union this applies to, could be data or unique
+    // Both only have 1 option so right now it doesn't matter though.
+    try array.appendSlice(&.{ 0 });
+    try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(val.data.unique.Columns.len))));
+    try array.appendSlice(std.mem.sliceAsBytes(val.data.unique.Columns.ptr[0..val.data.unique.Columns.len]));
 }
 
 fn serialize_raw_sequence_def_v9(array: *std.ArrayList(u8), val: RawSequenceDefV9) !void {
@@ -133,9 +159,15 @@ fn serialize_raw_sequence_def_v9(array: *std.ArrayList(u8), val: RawSequenceDefV
 }
 
 fn serialize_raw_schedule_def_v9(array: *std.ArrayList(u8), val: RawScheduleDefV9) !void {
-    _ = array;
-    _ = val;
-    unreachable;
+    try array.appendSlice(&[_]u8{ @intFromBool(val.name == null) });
+    if(val.name) |name| {
+        try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(name.len))));
+        try array.appendSlice(name);
+    }
+    try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(val.reducer_name.len))));
+    try array.appendSlice(val.reducer_name);
+
+    try array.appendSlice(&std.mem.toBytes(@as(u16, @intCast(val.scheduled_at_column))));
 }
 
 fn serialize_table_type(array: *std.ArrayList(u8), val: TableType) !void {
@@ -177,20 +209,18 @@ fn serialize_product_type(array: *std.ArrayList(u8), val: ProductType) std.mem.A
 }
 
 fn serialize_algebraic_type(array: *std.ArrayList(u8), val: AlgebraicType) !void {
+    try array.appendSlice(&[_]u8{@intFromEnum(val)});
     switch(val) {
         AlgebraicType.Product => |product| {
-            try array.appendSlice(&[_]u8{@intFromEnum(val)});
             try serialize_product_type(array, product);
         },
         AlgebraicType.Ref => |ref| {
-            try array.appendSlice(&[_]u8{@intFromEnum(val)});
             try array.appendSlice(&std.mem.toBytes(ref.inner));
         },
         AlgebraicType.Sum => |sum| {
-            try array.appendSlice(&[_]u8{@intFromEnum(val)});
             try serialize_sum_type(array, sum);
         },
-        else => try array.appendSlice(&[_]u8{@intFromEnum(val)}),
+        else => {},
     }
 }
 

@@ -1,10 +1,11 @@
 const std = @import("std");
 const spacetime = @import("spacetime.zig");
+comptime { _ = spacetime; }
 
-pub export fn spacetime_includes() void {
-    _ = &spacetime.__describe_module__;
-    _ = &spacetime.__call_reducer__;
-}
+pub const std_options = std.Options{
+    .log_level = .debug,
+    .logFn = spacetime.logFn,
+};
 
 pub const DbVector2 = struct {
     x: f32,
