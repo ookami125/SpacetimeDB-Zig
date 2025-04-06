@@ -346,39 +346,28 @@ pub fn Iter(struct_type: type) type {
         last_ret: SpacetimeValue = .OK,
         
         pub fn next(self: *@This()) spacetime.ReducerError!?*struct_type {
-            std.log.debug("line: {} (handle: {})", .{358, self.handle});
             var buffer_len: usize = undefined;
-            //while(true)
-            //{
             var ret: spacetime.SpacetimeValue = self.last_ret;
             if(self.contents == null or self.contents.?.len == 0) {
-                std.log.debug("line: {} (contents: {any})", .{364, self.contents});
                 if(self.handle._inner == spacetime.RowIter.INVALID._inner) {
-                std.log.debug("line: {}", .{366});
-
                     self.contents = null;
                     return null;
                 }
-                std.log.debug("line: {}", .{371});
 
                 buffer_len = self.buffer.len;
-                std.log.debug("line: {}", .{374});
                 ret = try spacetime.retMap(spacetime.row_iter_bsatn_advance(self.handle, @constCast(@ptrCast(&self.buffer)), &buffer_len));
-                std.log.debug("ret: {}", .{ret});
-                std.log.debug("self.buffer[0..buffer_len]: {any} {any} {any}", .{(&self.buffer).ptr, self.buffer.len, buffer_len});
                 self.contents = self.buffer[0..buffer_len];
-                std.log.debug("line: {}", .{379});
                 
                 if(ret == .EXHAUSTED) {
-                    std.log.debug("line: {}", .{382});
                     self.handle = spacetime.RowIter.INVALID;
                 }
-                std.log.debug("line: {}", .{385});
+                self.last_ret = ret;
+            }
+            if(self.contents == null or self.contents.?.len == 0) {
+                return null;
             }
 
-            std.log.debug("{}", .{struct_type});
             return StructDeserializer(struct_type)(self.allocator, &(self.contents.?));
-            //}
         }
 
         pub fn one_or_null(self: *@This()) ?*struct_type {
@@ -428,7 +417,7 @@ pub fn Column2ORM(comptime table_name: []const u8, comptime column_name: [:0]con
         allocator: std.mem.Allocator,
 
         pub fn filter(self: @This(), val: wrapped_type) !Iter(struct_type) {
-            const temp_name: []const u8 = table_name ++ "_" ++ column_name ++ "_idx_btree";
+            const temp_name: []const u8 = comptime table_name ++ "_" ++ column_name ++ "_idx_btree";
             var id = spacetime.IndexId{ ._inner = std.math.maxInt(u32)};
             const err = try spacetime.retMap(spacetime.index_id_from_name(temp_name.ptr, temp_name.len, &id));
             std.log.debug("index_id_from_name({}): {x}", .{err, id._inner});

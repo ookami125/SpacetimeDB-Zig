@@ -265,10 +265,14 @@ pub fn zigTypeToSpacetimeType(comptime param: ?type) AlgebraicType {
         []const u8 => .{ .String = {} },
         i32 => .{ .I32 = {}, },
         i64 => .{ .I64 = {}, },
+        i128 => .{ .I128 = {}, },
+        i256 => .{ .I258 = {}, },
         u32 => .{ .U32 = {}, },
         u64 => .{ .U64 = {}, },
-        f32 => .{ .F32 = {}, },
+        u128 => .{ .U128 = {}, },
         u256 => .{ .U256 = {}, },
+        f32 => .{ .F32 = {}, },
+        f64 => .{ .F64 = {}, },
         else => blk: {
             if(@typeInfo(param.?) == .@"struct") {
                 var elements: []const ProductTypeElement = &.{};
@@ -445,6 +449,28 @@ pub fn compile(comptime moduleTables : []const Table, comptime moduleReducers : 
                     }
                 }
             };
+        }
+        if(table.indexes) |_indexes| {
+            inline for(_indexes) |index| {
+
+                const fieldIndex = std.meta.fieldIndex(table.schema, index.name).?;
+
+                const indexAlgo: RawIndexAlgorithm = blk: {
+                    switch(index.layout) {
+                        .BTree => break :blk .{ .BTree = &.{ fieldIndex } },
+                        .Hash => break :blk .{ .Hash = &.{ fieldIndex } },
+                        .Direct => break :blk .{ .Direct = fieldIndex },
+                    }
+                };
+
+                indexes = indexes ++ &[_]RawIndexDefV9{
+                    RawIndexDefV9{
+                        .name = null,
+                        .accessor_name = index.name,
+                        .algorithm = indexAlgo
+                    }
+                };
+            }
         }
 
         var constraints: []const RawConstraintDefV9 = &[_]RawConstraintDefV9{};
@@ -657,6 +683,11 @@ pub const Reducer = struct {
     func: *const fn()void,
 };
 
+pub const Index = struct {
+    name: []const u8,
+    layout: std.meta.Tag(RawIndexAlgorithm),
+};
+
 pub const Table = struct {
     name: ?[]const u8 = null,
     schema: type,
@@ -664,7 +695,7 @@ pub const Table = struct {
     access: TableAccess = .Private,
     primary_key: ?[]const u8 = null,
     schedule_reducer: ?*const Reducer = null,
-    indexes: ?[]const []const u8 = null,
+    indexes: ?[]const Index = null,
     unique: ?[]const []const u8 = null,
     autoinc: ?[]const []const u8 = null,
 };
@@ -771,7 +802,7 @@ pub export fn __call_reducer__(
             comptime var argCount = 1;
             comptime var argList: []const std.builtin.Type.StructField = &[_]std.builtin.Type.StructField{
                 std.builtin.Type.StructField{
-                    .alignment = 0,
+                    .alignment = @alignOf(*ReducerContext),
                     .default_value = null,
                     .is_comptime = false,
                     .name = "0",
@@ -783,7 +814,7 @@ pub export fn __call_reducer__(
                 _ = name;
                 argList = argList ++ &[_]std.builtin.Type.StructField{
                     std.builtin.Type.StructField{
-                        .alignment = 0,
+                        .alignment = @alignOf(param.type.?),
                         .default_value = null,
                         .is_comptime = false,
                         .name = comptime utils.itoa(argCount),
