@@ -244,7 +244,6 @@ pub fn readArg(allocator: std.mem.Allocator, args: BytesSource, comptime t: type
                         inline else => |tag_field| {
                             const field = std.meta.fields(t)[@intFromEnum(tag_field)];
                             @field(temp, field.name) = (try readArg(allocator, args, field.type));
-
                         }
                     }
                     //@field(temp, field.name) = try readArg(allocator, args, @TypeOf(field));  
@@ -320,8 +319,8 @@ const StructImpl = struct {
     fields: []const StructFieldImpl,
 };
 
-pub fn addStructImpl(structImpls: *[]const StructImpl, layout: anytype) u32 {
-    const name = blk: {
+pub fn addStructImpl(structImpls: *[]const StructImpl, layout: anytype, name_override: ?[]const u8) u32 {
+    const name = name_override orelse blk: {
         var temp: []const u8 = @typeName(layout);
         if(std.mem.lastIndexOf(u8, temp, ".")) |idx|
             temp = temp[idx+1..];
@@ -344,7 +343,7 @@ pub fn addStructImpl(structImpls: *[]const StructImpl, layout: anytype) u32 {
                     .name = field.name,
                     .type = .{
                         .Ref = .{
-                            .inner = addStructImpl(structImpls, field.type),
+                            .inner = addStructImpl(structImpls, field.type, null),
                         }
                     }
                 }
@@ -429,7 +428,7 @@ pub fn compile(comptime moduleTables : []const Table, comptime moduleReducers : 
         const table_type: TableType = table.type;
         const table_access: TableAccess = table.access;
         const product_type_ref: AlgebraicTypeRef = AlgebraicTypeRef{
-            .inner = addStructImpl(&structDecls, table.schema),
+            .inner = addStructImpl(&structDecls, table.schema, table.schema_name),
         };
         const primary_key: []const u16 = blk: {
             if(table.primary_key) |key| {
@@ -601,8 +600,7 @@ pub fn callReducer(comptime mdef: []const Reducer, id: usize, args: anytype) Red
 }
 
 pub fn PrintModule(data: anytype) void {
-    var buf: [64]u8 = undefined;
-    std.log.debug(std.fmt.bufPrint(&buf, "\"{s}\": {{", .{@typeName(@TypeOf(data))}) catch "<Error>");
+    std.log.debug("\"{s}\": {{", .{@typeName(@TypeOf(data))});
     switch(@TypeOf(data)) {
         RawModuleDefV9 => {
             PrintModule(data.typespace);
@@ -658,16 +656,16 @@ pub fn PrintModule(data: anytype) void {
             }
         },
         []const u8 => {
-            std.log.debug(std.fmt.bufPrint(&buf, "\"{s}\"", .{data}) catch "<Error>");
+            std.log.debug("\"{s}\"", .{data});
         },
         u32 => {
-            std.log.debug(std.fmt.bufPrint(&buf, "{}", .{data}) catch "<Error>");
+            std.log.debug("{}", .{data});
         },
         else => {
-            std.log.debug("\"...\"");
+            std.log.debug("\"...\"", .{});
         },
     }
-    std.log.debug("},");
+    std.log.debug("}},", .{});
 }
 
 pub const Param = struct {
@@ -691,6 +689,7 @@ pub const Index = struct {
 pub const Table = struct {
     name: ?[]const u8 = null,
     schema: type,
+    schema_name: []const u8,
     type: TableType = .User,
     access: TableAccess = .Private,
     primary_key: ?[]const u8 = null,
@@ -706,7 +705,7 @@ pub const reducers: []const Reducer = blk: {
     for(@typeInfo(root).@"struct".decls) |decl| {
         const field = @field(root, decl.name);
         if(@TypeOf(@field(root, decl.name)) == Reducer) {
-            temp = temp ++ &[_]Reducer{ 
+            temp = temp ++ &[_]Reducer{
                 Reducer{
                     .name = field.name orelse decl.name,
                     .lifecycle = field.lifecycle,
@@ -731,6 +730,7 @@ pub const tables: []const Table = blk: {
                     .type = field.type,
                     .access = field.access,
                     .schema = field.schema,
+                    .schema_name = field.schema_name,
                     .name = field.name orelse decl.name,
                     .primary_key = field.primary_key,
                     .schedule_reducer = field.schedule_reducer,
@@ -759,7 +759,7 @@ pub export fn __describe_module__(description: BytesSink) void {
         @compileError(fmterr);
     };
 
-    //PrintModule(compiledModule);
+    PrintModule(compiledModule);
 
     serialize_module(&moduleDefBytes, compiledModule) catch {
        std.log.err("Allocator Error: Cannot continue!", .{});

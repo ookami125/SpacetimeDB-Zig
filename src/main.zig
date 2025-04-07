@@ -1,5 +1,6 @@
 const std = @import("std");
 const spacetime = @import("spacetime.zig");
+const utils = @import("spacetime/utils.zig");
 comptime { _ = spacetime; }
 
 pub const std_options = std.Options{
@@ -7,208 +8,128 @@ pub const std_options = std.Options{
     .logFn = spacetime.logFn,
 };
 
-pub const DbVector2 = struct {
-    x: f32,
-    y: f32,
+const TableAttribs = struct {
+    scheduled: ?[]const u8,
+    autoinc: ?[]const []const u8,
+    primary_key: ?[]const u8,
+    unique: ?[]const []const u8,
 };
 
-pub const config: spacetime.Table = .{ .schema = Config, .primary_key = "id", .access = .Public, };
-pub const Config = struct {
-    //#[primary_key]
-    id: u32,
-    world_size: u64,
+const TableAttribsPair = struct {
+    schema: type,
+    attribs: TableAttribs,
 };
 
-pub const entity: spacetime.Table = .{ .schema = Entity, .primary_key = "entity_id", .access = .Public };
-pub const Entity = struct {
-    //#[auto_inc]
-    //#[primary_key]
-    entity_id: u32,
-    position: DbVector2,
-    mass: u32,
-};
+comptime {
+    var attributeList: []const TableAttribsPair = &.{};
+}
 
-pub const circles: spacetime.Table = .{
-    .schema = Circle,
-    .primary_key = "entity_id",
-    .access = .Public,
-    .indexes = &.{ .{ .name = "player_id", .layout = .BTree } },
-};
-pub const Circle = struct {
-    //#[auto_inc]
-    //#[primary_key]
-    entity_id: u32,
-    //#[index(btree)]
-    player_id: u32,
-    direction: DbVector2,
-    speed: f32,
-    last_split_time: spacetime.Timestamp,
-};
+fn removeComptimeFields(data: type) type {
+    const typeInfo = @typeInfo(data).@"struct";
+    var newFields: []const std.builtin.Type.StructField = &.{};
 
-pub const players: spacetime.Table = .{
-    .schema = Player,
-    .primary_key = "identity",
-    .access = .Public,
-    .unique = &.{ "player_id" },
-    .autoinc = &.{ "player_id" },
-};
-pub const logged_out_players: spacetime.Table = .{
-    .schema = Player,
-    .primary_key = "identity",
-    .unique = &.{ "player_id" }
-};
-pub const Player = struct {
-    //#[primary_key]
-    identity: spacetime.Identity,
-    //#[unique]
-    //#[auto_inc]
-    player_id: u32,
-    name: []const u8,
-
-    pub fn destroy(self: *@This(), allocator: std.mem.Allocator) void {
-        allocator.free(self.name);
-        allocator.destroy(self);
+    inline for(std.meta.fields(data)) |field| {
+        if(!field.is_comptime) {
+            newFields = newFields ++ &[_]std.builtin.Type.StructField{ field };
+        }
     }
-};
 
-pub const food: spacetime.Table = .{ .schema = Food, .primary_key = "entity_id", .access = .Public };
-pub const Food = struct {
-    //#[primary_key]
-    entity_id: u32,
-};
+    return @Type(.{
+        .@"struct" = std.builtin.Type.Struct{
+            .backing_integer = typeInfo.backing_integer,
+            .decls = typeInfo.decls,
+            .fields = newFields,
+            .is_tuple = typeInfo.is_tuple,
+            .layout = typeInfo.layout,
+        }
+    });
+}
 
-//#[spacetimedb::table(name = spawn_food_timer, scheduled(spawn_food))]
-pub const spawn_food_timer: spacetime.Table = .{ .schema = SpawnFoodTimer, .primary_key = "scheduled_id" };
-pub const SpawnFoodTimer = struct {
-    //#[primary_key]
-    //#[auto_inc]
-    scheduled_id: u64,
-    scheduled_at: spacetime.ScheduleAt,
-};
+fn Table(data: type) spacetime.Table {
+    const fieldIdx = std.meta.fieldIndex(data, "__spacetime_10.0__attribs__");
+    if(fieldIdx == null) return .{ .schema = data, .schema_name = @typeName(data), };
 
-//#[spacetimedb::table(name = circle_decay_timer, scheduled(circle_decay))]
-pub const circle_decay_timer: spacetime.Table = .{ .schema = CircleDecayTimer, .primary_key = "scheduled_id" };
-pub const CircleDecayTimer = struct {
-    //#[primary_key]
-    //#[auto_inc]
-    scheduled_id: u64,
-    scheduled_at: spacetime.ScheduleAt,
-};
+    const attribs: TableAttribs = utils.getMemberDefaultValue(data, "__spacetime_10.0__attribs__");
+    return .{
+        .schema = removeComptimeFields(data),
+        .schema_name = @typeName(data),
+        .primary_key = attribs.primary_key,
+        //.schedule_reducer = attribs.scheduled,
+        .unique = attribs.unique,
+        .autoinc = attribs.autoinc,
+    };
+}
 
-//#[spacetimedb::table(name = circle_recombine_timer, scheduled(circle_recombine))]
-pub const circle_recombine_timer: spacetime.Table = .{ .schema = CircleRecombineTimer, .primary_key = "scheduled_id" };
-pub const CircleRecombineTimer = struct {
-    //#[primary_key]
-    //#[auto_inc]
-    scheduled_id: u64,
-    scheduled_at: spacetime.ScheduleAt,
-    player_id: u32,
-};
+fn TableSchema(data: TableAttribsPair) type {
+    const attribs: TableAttribs = data.attribs;
 
-pub const consume_entity_timer: spacetime.Table = .{ .schema = ConsumeEntityTimer, .primary_key = "scheduled_id" };
-pub const ConsumeEntityTimer = struct {
-    //#[primary_key]
-    //#[auto_inc]
-    scheduled_id: u64,
-    scheduled_at: spacetime.ScheduleAt,
-    consumed_entity_id: u32,
-    consumer_entity_id: u32,
-};
+    attributeList = attributeList ++ &[1]TableAttribsPair{ data };
+
+    var newFields: []const std.builtin.Type.StructField = &.{};
+
+    newFields = newFields ++ &[_]std.builtin.Type.StructField{
+       std.builtin.Type.StructField{
+           .alignment = @alignOf(TableAttribs),
+           .default_value = @ptrCast(&attribs),
+           .is_comptime = false,
+           .name = "__spacetime_10.0__attribs__",
+           .type = TableAttribs,
+       }
+    };
+
+    newFields = newFields ++ std.meta.fields(data.schema);
+    const newStruct: std.builtin.Type.Struct = .{
+        .backing_integer = null,
+        .decls = &[_]std.builtin.Type.Declaration{},
+        .fields = newFields,
+        .is_tuple = false,
+        .layout = .auto
+    };
+    return @Type(.{
+        .@"struct" = newStruct,
+    });
+}
+
+//#[spacetimedb::table(name = move_all_players_timer, scheduled(move_all_players))]
+pub const move_all_players_timer = Table(MoveAllPlayersTimer);
+pub const MoveAllPlayersTimer = TableSchema(.{
+    .schema = struct {
+        scheduled_id: u64,
+        scheduled_at: spacetime.ScheduleAt,
+    },
+    .attribs = TableAttribs{
+        .scheduled = "move_all_players_reducer",
+        .autoinc = &.{"scheduled_id"},
+        .primary_key = "scheduled_id",
+        .unique = &.{},
+    }
+});
 
 pub const Init: spacetime.Reducer = .{ .func_type = @TypeOf(InitReducer), .func = @ptrCast(&InitReducer), .lifecycle = .Init, };
 pub fn InitReducer(ctx: *spacetime.ReducerContext) !void {
     std.log.info("Initializing...", .{});
-    try ctx.db.get("config").insert(Config {
-        .id = 0,
-        .world_size = 1000,
-    });
-    try ctx.db.get("circle_decay_timer").insert(CircleDecayTimer {
-        .scheduled_id = 0,
-        .scheduled_at = .{ .Interval = .{ .__time_duration_micros__ = 5 * std.time.us_per_s }},
-    });
-    try ctx.db.get("spawn_food_timer").insert(SpawnFoodTimer {
-        .scheduled_id = 0,
-        .scheduled_at = .{ .Interval = .{ .__time_duration_micros__ = 500 * std.time.us_per_ms }}
-    });
-    try ctx.db.get("move_all_players_timer").insert(MoveAllPlayersTimer {
+    try ctx.db.get("move_all_players_timer").insert(MoveAllPlayersTimer{
         .scheduled_id = 0,
         .scheduled_at = .{ .Interval = .{ .__time_duration_micros__ = 50 * std.time.us_per_ms }}
     });
 }
 
-pub const OnConnect = spacetime.Reducer{ .func_type = @TypeOf(OnConnectReducer), .func = @ptrCast(&OnConnectReducer), .lifecycle = .OnConnect, };
-pub fn OnConnectReducer(ctx: *spacetime.ReducerContext) !void {
-    // Called everytime a new client connects
-    std.log.info("[OnConnect]", .{});
-    const nPlayer = try ctx.db.get("logged_out_players").col("identity").find(.{ .identity = ctx.sender });
-    if (nPlayer) |player| {
-       try ctx.db.get("players").insert(player.*);
-       try ctx.db.get("logged_out_players").col("identity").delete(.{ .identity = player.identity });
-    } else {
-       try ctx.db.get("players").insert(Player {
-           .identity = ctx.sender,
-           .player_id = 0,
-           .name = "",
-       });
-    }
-}
-
-pub const OnDisconnect = spacetime.Reducer{ .func_type = @TypeOf(OnDisconnectReducer), .func = @ptrCast(&OnDisconnectReducer), .lifecycle = .OnDisconnect, };
-pub fn OnDisconnectReducer(ctx: *spacetime.ReducerContext) !void {
-    // Called everytime a client disconnects
-    std.log.info("[OnDisconnect]", .{});
-    const nPlayer = try ctx.db.get("players").col("identity").find(.{ .identity = ctx.sender});
-    if(nPlayer == null) {
-        std.log.err("Disconnecting player doesn't have a valid players row!",.{});
-        return;
-    }
-    const player = nPlayer.?;
-    //std.log.info("{?}", .{player});
-    const player_id = player.player_id;
-    try ctx.db.get("logged_out_players").insert(player.*);
-    try ctx.db.get("players").col("identity").delete(.{ .identity = ctx.sender});
-
-    // Remove any circles from the arena
-    var iter = ctx.db.get("circles").col("player_id").filter(.{ .player_id = player_id });
-    //_ = player_id;
-    _ = &iter;
-    // std.log.info("blag", .{});
-    // while (try iter.next()) |circle_val| {
-    //     try ctx.db.get("entity").col("entity_id").delete(.{ .entity_id = circle_val.entity_id, });
-    //     try ctx.db.get("circle").col("entity_id").delete(.{ .entity_id = circle_val.entity_id, });
-    // }
-}
-
-//#[spacetimedb::table(name = move_all_players_timer, scheduled(move_all_players))]
-pub const move_all_players_timer: spacetime.Table = .{
-    .schema = MoveAllPlayersTimer,
-    .primary_key = "scheduled_id",
-    .schedule_reducer = &move_all_players
-};
-pub const MoveAllPlayersTimer = struct {
-    //#[primary_key]
-    //#[auto_inc]
-    scheduled_id: u64,
-    scheduled_at: spacetime.ScheduleAt,
-};
-
 pub const move_all_players = spacetime.Reducer{
     .func_type = @TypeOf(move_all_players_reducer),
     .func = @ptrCast(&move_all_players_reducer),
-    .params = &.{ "_timer" }
+    .params = &.{ "timer" }
 };
-pub fn move_all_players_reducer(ctx: *spacetime.ReducerContext, _timer: MoveAllPlayersTimer) !void {
+pub fn move_all_players_reducer(ctx: *spacetime.ReducerContext, timer: MoveAllPlayersTimer) !void {
     _ = ctx;
-    _ = _timer;
-    //std.log.info("Move Players!", .{});
+    std.log.info("(id: {}) Move Players!", .{timer.scheduled_id});
     return;
 }
 
-pub const say_hello = spacetime.Reducer{ .func_type = @TypeOf(say_hello_reducer), .func = @ptrCast(&say_hello_reducer)};
+// pub const say_hello = spacetime.Reducer{ .func_type = @TypeOf(say_hello_reducer), .func = @ptrCast(&say_hello_reducer)};
 
-pub fn say_hello_reducer(ctx: *spacetime.ReducerContext) !void {
-    _ = ctx;
-    std.log.info("Hello!", .{});
-    return;
-}
+// pub fn say_hello_reducer(ctx: *spacetime.ReducerContext) !void {
+//     _ = ctx;
+//     std.log.info("Hello!", .{});
+//     return;
+// }
 
