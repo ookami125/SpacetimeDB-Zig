@@ -285,9 +285,9 @@ pub fn UnionDeserializer(union_type: type) fn(allocator: std.mem.Allocator, *[]c
     }.deserialize;
 } 
 
-pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[]const u8) std.mem.Allocator.Error!*struct_type {
+pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[]u8) std.mem.Allocator.Error!*struct_type {
     return struct {
-        pub fn deserialize(allocator: std.mem.Allocator, data: *[]const u8) std.mem.Allocator.Error!*struct_type {
+        pub fn deserialize(allocator: std.mem.Allocator, data: *[]u8) std.mem.Allocator.Error!*struct_type {
             const ret = try allocator.create(struct_type);
             var offset_mem = data.*;
             const fields = std.meta.fields(struct_type);
@@ -402,7 +402,7 @@ pub fn Column2ORM(comptime table_name: []const u8, comptime column_name: [:0]con
             .fields = &.{
                 std.builtin.Type.StructField{
                     .alignment = @alignOf(column_type),
-                    .default_value = null,
+                    .default_value_ptr = null,
                     .is_comptime = false,
                     .name = column_name,
                     .type = column_type,

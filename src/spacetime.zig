@@ -803,7 +803,7 @@ pub export fn __call_reducer__(
             comptime var argList: []const std.builtin.Type.StructField = &[_]std.builtin.Type.StructField{
                 std.builtin.Type.StructField{
                     .alignment = @alignOf(*ReducerContext),
-                    .default_value = null,
+                    .default_value_ptr = null,
                     .is_comptime = false,
                     .name = "0",
                     .type = *ReducerContext,
@@ -815,7 +815,7 @@ pub export fn __call_reducer__(
                 argList = argList ++ &[_]std.builtin.Type.StructField{
                     std.builtin.Type.StructField{
                         .alignment = @alignOf(param.type.?),
-                        .default_value = null,
+                        .default_value_ptr = null,
                         .is_comptime = false,
                         .name = comptime utils.itoa(argCount),
                         .type = param.type.?,
