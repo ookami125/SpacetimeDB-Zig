@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const lib = b.addExecutable(.{
-        .name = "stdb-zig-helloworld",
+        .name = "blackholio",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,

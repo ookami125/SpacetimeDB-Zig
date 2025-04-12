@@ -285,10 +285,10 @@ pub fn UnionDeserializer(union_type: type) fn(allocator: std.mem.Allocator, *[]c
     }.deserialize;
 } 
 
-pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[]u8) std.mem.Allocator.Error!*struct_type {
+pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[]u8) std.mem.Allocator.Error!struct_type {
     return struct {
-        pub fn deserialize(allocator: std.mem.Allocator, data: *[]u8) std.mem.Allocator.Error!*struct_type {
-            const ret = try allocator.create(struct_type);
+        pub fn deserialize(allocator: std.mem.Allocator, data: *[]u8) std.mem.Allocator.Error!struct_type {
+            var ret: struct_type = undefined;
             var offset_mem = data.*;
             const fields = std.meta.fields(struct_type);
             inline for(fields) |field| {
@@ -296,22 +296,22 @@ pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[
                     []const u8 => {
                         const len = std.mem.bytesAsValue(u32, offset_mem[0..4]).*;
                         const str = try allocator.dupe(u8, offset_mem[4..(4+len)]);
-                        @field(ret.*, field.name) = str;
+                        @field(ret, field.name) = str;
                         offset_mem = offset_mem[4+len ..];
                     },
                     i8, u8, i16, u16, i32, u32,
                     i64, u64, i128, u128, i256, u256,
                     f32, f64  => {
-                        std.log.debug("field_type: {} (offset_mem.len: {})", .{field.type, offset_mem.len});
-                        @field(ret.*, field.name) = std.mem.bytesAsValue(field.type, offset_mem[0..@sizeOf(field.type)]).*;
+                        //std.log.debug("field_type: {} (offset_mem.len: {})", .{field.type, offset_mem.len});
+                        @field(ret, field.name) = std.mem.bytesAsValue(field.type, offset_mem[0..@sizeOf(field.type)]).*;
                         offset_mem = offset_mem[@sizeOf(field.type)..];
                     },
                     else => blk: {
                         if(@typeInfo(field.type) == .@"struct") {
-                            @field(ret.*, field.name) = (try StructDeserializer(field.type)(allocator, &offset_mem)).*;
+                            @field(ret, field.name) = try StructDeserializer(field.type)(allocator, &offset_mem);
                             break :blk;
                         } else if(@typeInfo(field.type) == .@"union") {
-                            @field(ret.*, field.name) = (try UnionDeserializer(field.type)(allocator, &offset_mem)).*;
+                            @field(ret, field.name) = try UnionDeserializer(field.type)(allocator, &offset_mem);
                             break :blk;
                         }
                         @compileLog(field.type);
@@ -320,7 +320,7 @@ pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[
                 }
             }
             data.* = offset_mem;
-            std.log.debug("StructDeserializer Ended!", .{});
+            //std.log.debug("StructDeserializer Ended!", .{});
             return ret;
         }
     }.deserialize;
@@ -341,11 +341,11 @@ pub fn Iter(struct_type: type) type {
     return struct {
         allocator: std.mem.Allocator,
         handle: spacetime.RowIter,
-        buffer: [0x20_000]u8 = undefined,
+        buffer: [0x5_000]u8 = undefined,
         contents: ?[]u8 = null,
         last_ret: SpacetimeValue = .OK,
         
-        pub fn next(self: *@This()) spacetime.ReducerError!?*struct_type {
+        pub fn next(self: *@This()) spacetime.ReducerError!?struct_type {
             var buffer_len: usize = undefined;
             var ret: spacetime.SpacetimeValue = self.last_ret;
             if(self.contents == null or self.contents.?.len == 0) {
@@ -367,10 +367,10 @@ pub fn Iter(struct_type: type) type {
                 return null;
             }
 
-            return StructDeserializer(struct_type)(self.allocator, &(self.contents.?));
+            return try StructDeserializer(struct_type)(self.allocator, &(self.contents.?));
         }
 
-        pub fn one_or_null(self: *@This()) ?*struct_type {
+        pub fn one_or_null(self: *@This()) ?struct_type {
             defer self.close();
             return self.next() catch null;
         }
@@ -385,8 +385,8 @@ pub fn Iter(struct_type: type) type {
 
 pub fn Column2ORM(comptime table_name: []const u8, comptime column_name: [:0]const u8) type {
     const table = blk: {
-        for(spacetime.tables) |table| {
-            if(std.mem.eql(u8, table_name, table.name.?)) {
+        for(spacetime.globalSpec.tables) |table| {
+            if(std.mem.eql(u8, table_name, table.name)) {
                 break :blk table;
             }
         }
@@ -420,7 +420,8 @@ pub fn Column2ORM(comptime table_name: []const u8, comptime column_name: [:0]con
             const temp_name: []const u8 = comptime table_name ++ "_" ++ column_name ++ "_idx_btree";
             var id = spacetime.IndexId{ ._inner = std.math.maxInt(u32)};
             const err = try spacetime.retMap(spacetime.index_id_from_name(temp_name.ptr, temp_name.len, &id));
-            std.log.debug("index_id_from_name({}): {x}", .{err, id._inner});
+            _ = err;
+            //std.log.debug("index_id_from_name({}): {x}", .{err, id._inner});
 
             const nVal: struct{ bounds: BoundVariant, val: wrapped_type } = .{
                 .bounds = .Inclusive,
@@ -454,7 +455,7 @@ pub fn Column2ORM(comptime table_name: []const u8, comptime column_name: [:0]con
             };
         }
 
-        pub fn find(self: @This(), val: wrapped_type) !?*struct_type {
+        pub fn find(self: @This(), val: wrapped_type) !?struct_type {
             var iter = try self.filter(val);
             return iter.one_or_null();
         }
@@ -490,29 +491,92 @@ pub fn Column2ORM(comptime table_name: []const u8, comptime column_name: [:0]con
                 &deleted_fields
             );
         }
+
+        pub fn update(self: @This(), val: struct_type) !void {
+            var table_id: TableId = undefined;
+            _ = spacetime.table_id_from_name(table_name.ptr, table_name.len, &table_id);
+
+            const temp_name: []const u8 = table_name ++ "_" ++ column_name ++ "_idx_btree";
+            var index_id = spacetime.IndexId{ ._inner = std.math.maxInt(u32) };
+            _ = spacetime.index_id_from_name(temp_name.ptr, temp_name.len, &index_id);
+
+            const size: usize = getStructSize(val);
+            const mem = try self.allocator.alloc(u8, size);
+            var offset_mem = mem;
+            defer self.allocator.free(mem);
+            getStructData(val, &offset_mem);
+
+            const data = mem[0..size];
+            var data_len = data.len;
+            _ = spacetime.datastore_update_bsatn(
+                table_id,
+                index_id,
+                data.ptr,
+                &data_len
+            );
+        }
     };
+}
+
+pub fn AutoIncStruct(base: type, autoincs: []const [:0]const u8) type {
+    return @Type(.{
+        .@"struct" = std.builtin.Type.Struct{
+            .backing_integer = null,
+            .decls = &.{},
+            .is_tuple = false,
+            .layout = .auto,
+            .fields = blk: {
+                var fields: []const std.builtin.Type.StructField = &.{};
+                for(autoincs) |autoinc| {
+                    const member_type = utils.getMemberDefaultType(base, autoinc);
+                    fields = fields ++ &[_]std.builtin.Type.StructField{
+                        std.builtin.Type.StructField{
+                            .is_comptime = false,
+                            .name = autoinc,
+                            .default_value_ptr = null,
+                            .type = member_type,
+                            .alignment = 0,
+                        }
+                    };
+                }
+
+                break :blk fields;
+            }
+        }
+    });
 }
 
 pub fn Table2ORM(comptime table_name: []const u8) type {
     const table = blk: {
-        for(spacetime.tables) |table| {
-            if(std.mem.eql(u8, table_name, table.name.?)) {
+        for(spacetime.globalSpec.tables) |table| {
+            if(std.mem.eql(u8, table_name, table.name)) {
                 break :blk table;
             }
         }
+        @compileError("Table " ++ table_name ++ " not found!");
     };
     const struct_type = table.schema;
+
+    const autoinc_return_type = AutoIncStruct(struct_type, table.attribs.autoinc orelse &.{});
 
     return struct {
         allocator: std.mem.Allocator,
 
-        pub fn insert(self: @This(), data: struct_type) !void {
+        pub fn insert(self: @This(), data: struct_type) !struct_type {
             var id: TableId = undefined;
             _ = spacetime.table_id_from_name(table_name.ptr, table_name.len, &id);
-            const raw_data = try StructSerializer(struct_type)(self.allocator, data);
+            var raw_data = try StructSerializer(struct_type)(self.allocator, data);
             defer self.allocator.free(raw_data);
             var raw_data_len: usize = raw_data.len;
             _ = spacetime.datastore_insert_bsatn(id, raw_data.ptr, &raw_data_len);
+
+            var data_copy = data;
+            const out = try StructDeserializer(autoinc_return_type)(self.allocator, &raw_data);
+            inline for(std.meta.fields(autoinc_return_type)) |field| {
+                @field(data_copy, field.name) = @field(out, field.name);
+            }
+
+            return data_copy;
         }
 
         pub fn iter(self: @This()) Iter(struct_type) {
@@ -530,6 +594,15 @@ pub fn Table2ORM(comptime table_name: []const u8) type {
             return .{
                 .allocator = self.allocator,
             };
+        }
+
+        pub fn count(self: @This()) !u64 {
+            _ = self;
+            var id: TableId = undefined;
+            _ = spacetime.table_id_from_name(table_name.ptr, table_name.len, &id);
+            var val: u64 = undefined;
+            _ = try spacetime.retMap(spacetime.datastore_table_row_count(id, &val));
+            return val;
         }
     };
 }
@@ -549,6 +622,7 @@ pub const ReducerContext = struct {
     timestamp: spacetime.Timestamp,
     connection_id: spacetime.ConnectionId,
     db: Local,
+    rng: std.Random.DefaultPrng = std.Random.DefaultPrng.init(0),
 };
 
 pub const ReducerFn = fn(*ReducerContext) void;

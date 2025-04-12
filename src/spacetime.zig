@@ -73,16 +73,42 @@ pub const Identity = struct {
 };
 
 pub const Timestamp = struct {
-    __timestamp_micros_since_unix_epoch__: i64
+    __timestamp_micros_since_unix_epoch__: i64,
+
+    pub fn DurationSince(self: @This(), other: @This()) TimeDuration {
+        return .{
+            .__time_duration_micros__ = other.__timestamp_micros_since_unix_epoch__ - self.__timestamp_micros_since_unix_epoch__,
+        };
+    }
+};
+
+pub const TimeUnit = enum {
+    Seconds,
 };
 
 pub const TimeDuration = struct {
-    __time_duration_micros__: i64
+    __time_duration_micros__: i64,
+
+    pub fn as_f32(self: @This(), unit: TimeUnit) f32 {
+        return switch(unit) {
+            .Seconds => @as(f32, @floatFromInt(self.__time_duration_micros__)) / std.time.us_per_s,
+        };
+    }
 };
 
 pub const ScheduleAt = union(enum){
     Interval: TimeDuration,
     Time: Timestamp,
+
+    pub fn durationSecs(ctx: *ReducerContext, secs: f32) ScheduleAt {
+        return .{
+            .Time = .{
+                .__timestamp_micros_since_unix_epoch__ =
+                    ctx.timestamp.__timestamp_micros_since_unix_epoch__ +
+                    @as(i64, @intFromFloat(secs * std.time.us_per_s)),
+            }
+        };
+    }
 };
 
 pub const ConnectionId = struct {
@@ -124,6 +150,9 @@ pub extern "spacetime_10.0" fn datastore_index_scan_range_bsatn( index_id: Index
 pub extern "spacetime_10.0" fn row_iter_bsatn_close(iter: RowIter) u16;
 
 pub extern "spacetime_10.0" fn datastore_delete_by_index_scan_range_bsatn(index_id: IndexId, prefix_ptr: [*c]const u8, prefix_len: usize, prefix_elems: ColId, rstart_ptr: [*c]const u8, rstart_len: usize, rend_ptr: [*c]const u8, rend_len: usize, out: [*c]u32) u16;
+pub extern "spacetime_10.0" fn datastore_update_bsatn(table_id: TableId, index_id: IndexId, row_ptr: [*c]u8, row_len_ptr: [*c]usize) u16;
+
+pub extern "spacetime_10.0" fn datastore_table_row_count(table_id: TableId, out: [*c]u64) u16;
 
 pub fn retMap(errVal: i17) !SpacetimeValue {
     return switch(errVal) {
@@ -239,16 +268,14 @@ pub fn readArg(allocator: std.mem.Allocator, args: BytesSource, comptime t: type
                     const tagType = std.meta.Tag(t);
                     const intType = u8;
                     const tag: tagType = @enumFromInt(try readArg(allocator, args, intType));
-                    var temp: t = undefined;//@unionInit(t, @tagName(tag), undefined);
                     switch(tag) {
                         inline else => |tag_field| {
+                            var temp: t = @unionInit(t, @tagName(tag_field), undefined);
                             const field = std.meta.fields(t)[@intFromEnum(tag_field)];
                             @field(temp, field.name) = (try readArg(allocator, args, field.type));
-
+                            return temp;
                         }
                     }
-                    //@field(temp, field.name) = try readArg(allocator, args, @TypeOf(field));  
-                    return temp;
                 },
                 else => {
                     @compileLog(t);
@@ -320,7 +347,7 @@ const StructImpl = struct {
     fields: []const StructFieldImpl,
 };
 
-pub fn addStructImpl(structImpls: *[]const StructImpl, layout: anytype) u32 {
+pub fn addStructImpl(comptime structImpls: *[]const StructImpl, layout: anytype) u32 {
     const name = blk: {
         var temp: []const u8 = @typeName(layout);
         if(std.mem.lastIndexOf(u8, temp, ".")) |idx|
@@ -330,6 +357,7 @@ pub fn addStructImpl(structImpls: *[]const StructImpl, layout: anytype) u32 {
 
     //FIXME: Search for existing structImpl of provided layout. I think the current might work, but I don't trust it.
     inline for(structImpls.*, 0..) |structImpl, i| {
+        @setEvalBranchQuota(structImpl.name.len * 100);
         if(std.mem.eql(u8, structImpl.name, name)) {
             return i;
         }
@@ -399,6 +427,7 @@ pub fn getStructImplOrType(structImpls: []const StructImpl, layout: type) Algebr
         break :blk temp;
     };
     
+    @setEvalBranchQuota(structImpls.len * 100);
     inline for(structImpls, 0..) |structImpl, i| {
         if(std.mem.eql(u8, structImpl.name, name)) {
             return .{
@@ -412,179 +441,7 @@ pub fn getStructImplOrType(structImpls: []const StructImpl, layout: type) Algebr
     return zigTypeToSpacetimeType(layout);
 }
 
-pub fn compile(comptime moduleTables : []const Table, comptime moduleReducers : []const Reducer) !RawModuleDefV9 {
-    var def : RawModuleDefV9 = undefined;
-    _ = &def;
-
-    var tableDefs: []const RawTableDefV9 = &[_]RawTableDefV9{};
-    var reducerDefs: []const RawReducerDefV9 = &[_]RawReducerDefV9{};
-
-    var raw_types: []const AlgebraicType = &[_]AlgebraicType{};
-    var types: []const RawTypeDefV9 = &[_]RawTypeDefV9{};
-
-    var structDecls: []const StructImpl = &[_]StructImpl{};
-
-    inline for(moduleTables) |table| {
-        const table_name: []const u8 = table.name.?;
-        const table_type: TableType = table.type;
-        const table_access: TableAccess = table.access;
-        const product_type_ref: AlgebraicTypeRef = AlgebraicTypeRef{
-            .inner = addStructImpl(&structDecls, table.schema),
-        };
-        const primary_key: []const u16 = blk: {
-            if(table.primary_key) |key| {
-                break :blk &[_]u16{ std.meta.fieldIndex(table.schema, key).?, };
-            }
-            break :blk &[_]u16{};
-        };
-
-        var indexes: []const RawIndexDefV9 = &[_]RawIndexDefV9{};
-        if(table.primary_key) |key| {
-            indexes = indexes ++ &[_]RawIndexDefV9{
-                RawIndexDefV9{
-                    .name = null,
-                    .accessor_name = key,
-                    .algorithm = .{
-                        .BTree = &.{ 0 }
-                    }
-                }
-            };
-        }
-        if(table.indexes) |_indexes| {
-            inline for(_indexes) |index| {
-
-                const fieldIndex = std.meta.fieldIndex(table.schema, index.name).?;
-
-                const indexAlgo: RawIndexAlgorithm = blk: {
-                    switch(index.layout) {
-                        .BTree => break :blk .{ .BTree = &.{ fieldIndex } },
-                        .Hash => break :blk .{ .Hash = &.{ fieldIndex } },
-                        .Direct => break :blk .{ .Direct = fieldIndex },
-                    }
-                };
-
-                indexes = indexes ++ &[_]RawIndexDefV9{
-                    RawIndexDefV9{
-                        .name = null,
-                        .accessor_name = index.name,
-                        .algorithm = indexAlgo
-                    }
-                };
-            }
-        }
-
-        var constraints: []const RawConstraintDefV9 = &[_]RawConstraintDefV9{};
-        if(table.primary_key) |_| {
-            constraints = constraints ++ &[_]RawConstraintDefV9{
-                RawConstraintDefV9{
-                    .name = null,
-                    .data = .{ .unique = .{ .Columns = &.{ primary_key[0] } } },
-                }
-            };
-        }
-
-        const schedule: ?RawScheduleDefV9 = schedule_blk: {
-            if(table.schedule_reducer == null) break :schedule_blk null;
-            const column = column_blk: for(std.meta.fields(table.schema), 0..) |field, i| {
-                if(field.type == ScheduleAt) break :column_blk i;
-            };
-            const resolvedReducer = blk: for(moduleReducers) |reducer| {
-                if(reducer.func == table.schedule_reducer.?.func)
-                    break :blk reducer;
-            };
-            break :schedule_blk RawScheduleDefV9{
-                .name = table_name ++ "_sched",
-                .reducer_name = resolvedReducer.name.?,
-                .scheduled_at_column = column,
-            };
-        };
-
-        tableDefs = tableDefs ++ &[_]RawTableDefV9{
-            .{
-                .name = table_name,
-                .product_type_ref = product_type_ref,
-                .primary_key = primary_key,
-                .indexes = indexes,
-                .constraints = constraints,
-                .sequences = &[_]RawSequenceDefV9{},
-                .schedule = schedule,
-                .table_type = table_type,
-                .table_access = table_access,
-            }
-        };
-    }
-
-    inline for(structDecls) |structDecl| {
-        var product_elements: []const ProductTypeElement = &[_]ProductTypeElement{};
-
-        inline for(structDecl.fields) |field|
-        {
-            product_elements = product_elements ++ &[_]ProductTypeElement{
-                .{
-                    .name = field.name,
-                    .algebraic_type = field.type,
-                }
-            };
-        }
-
-        raw_types = raw_types ++ &[_]AlgebraicType{
-            .{
-                .Product = .{
-                    .elements = product_elements,
-                }
-            },
-        };
-
-        types = types ++ &[_]RawTypeDefV9{
-            .{
-                .name = .{
-                    .scope = &[_][]u8{},
-                    .name = structDecl.name
-                },
-                .ty = .{ .inner = raw_types.len-1, },
-                .custom_ordering = true,
-            }
-        };
-    }
-
-    inline for(moduleReducers) |reducer| {
-        const name: []const u8 = reducer.name.?;
-        const lifecycle: Lifecycle = reducer.lifecycle;
-        
-        var params: []const ProductTypeElement = &[_]ProductTypeElement{};
-        const param_names = reducer.params;
-
-        for(@typeInfo(reducer.func_type).@"fn".params[1..], param_names) |param, param_name| {
-            params = params ++ &[_]ProductTypeElement{
-                .{
-                    .name = param_name,
-                    .algebraic_type = getStructImplOrType(structDecls, param.type.?),
-                }
-            };
-        }
-
-        reducerDefs = reducerDefs ++ &[_]RawReducerDefV9{
-            .{
-                .name = name,
-                .params = .{ .elements = params },
-                .lifecycle = lifecycle,
-            },
-        };
-    }
-
-    return .{
-        .typespace = .{
-            .types = raw_types,
-        },
-        .tables = tableDefs,
-        .reducers = reducerDefs,
-        .types = types,
-        .misc_exports = &[_]RawMiscModuleExportV9{},
-        .row_level_security = &[_]RawRowLevelSecurityDefV9{},
-    };
-}
-
-pub fn callReducer(comptime mdef: []const Reducer, id: usize, args: anytype) ReducerError!void {
+pub fn callReducer(comptime mdef: []const SpecReducer, comptime id: usize, args: anytype) ReducerError!void {
     inline for(mdef, 0..) |field, i| {
         if(id == i) {
             const func = field.func_type;
@@ -593,7 +450,7 @@ pub fn callReducer(comptime mdef: []const Reducer, id: usize, args: anytype) Red
                 return @call(.auto, func_val, args);
             }
         
-            const name: []const u8 = field.name.?;
+            const name: []const u8 = field.name;
             std.log.err("invalid number of args passed to {s}, expected {} got {}", .{name, @typeInfo(func).@"fn".params.len, std.meta.fields(@TypeOf(args)).len});
             @panic("invalid number of args passed to func");
         }
@@ -601,8 +458,7 @@ pub fn callReducer(comptime mdef: []const Reducer, id: usize, args: anytype) Red
 }
 
 pub fn PrintModule(data: anytype) void {
-    var buf: [64]u8 = undefined;
-    std.log.debug(std.fmt.bufPrint(&buf, "\"{s}\": {{", .{@typeName(@TypeOf(data))}) catch "<Error>");
+    std.log.debug("\"{s}\": {{", .{@typeName(@TypeOf(data))});
     switch(@TypeOf(data)) {
         RawModuleDefV9 => {
             PrintModule(data.typespace);
@@ -652,30 +508,43 @@ pub fn PrintModule(data: anytype) void {
             PrintModule(data.scope);
             PrintModule(data.name);
         },
+        []const RawReducerDefV9 => {
+            for(data) |elem| {
+                PrintModule(elem);
+            }
+        },
+        RawReducerDefV9 => {
+            PrintModule(data.lifecycle);
+            PrintModule(data.name);
+            PrintModule(data.params);
+        },
+        Lifecycle => {
+            std.log.debug("\"{any}\"", .{data});
+        },
         [][]const u8 => {
             for(data) |elem| {
                 PrintModule(elem);
             }
         },
         []const u8 => {
-            std.log.debug(std.fmt.bufPrint(&buf, "\"{s}\"", .{data}) catch "<Error>");
+            std.log.debug("\"{s}\"", .{data});
         },
         u32 => {
-            std.log.debug(std.fmt.bufPrint(&buf, "{}", .{data}) catch "<Error>");
+            std.log.debug("{}", .{data});
         },
         else => {
-            std.log.debug("\"...\"");
+            std.log.debug("\"...\"", .{});
         },
     }
-    std.log.debug("},");
+    std.log.debug("}},", .{});
 }
 
 pub const Param = struct {
     name: []const u8,
 };
 
-pub const Reducer = struct {
-    name: ?[]const u8 = null,
+pub const SpecReducer = struct {
+    name: []const u8,
     lifecycle: Lifecycle = .None,
     params: []const [:0]const u8 = &.{},
     param_types: ?[]type = null,
@@ -683,66 +552,250 @@ pub const Reducer = struct {
     func: *const fn()void,
 };
 
+pub fn Reducer(data: anytype) SpecReducer {
+    return .{
+        .name = data.name,
+        .lifecycle = if(@hasField(@TypeOf(data), "lifecycle")) data.lifecycle else .None,
+        .params = if(@hasField(@TypeOf(data), "params")) data.params else &.{},
+        .func = @ptrCast(data.func),
+        .func_type = @TypeOf(data.func.*)
+    };
+}
+
 pub const Index = struct {
     name: []const u8,
     layout: std.meta.Tag(RawIndexAlgorithm),
 };
 
-pub const Table = struct {
-    name: ?[]const u8 = null,
-    schema: type,
+pub const TableAttribs = struct {
     type: TableType = .User,
     access: TableAccess = .Private,
     primary_key: ?[]const u8 = null,
-    schedule_reducer: ?*const Reducer = null,
+    schedule: ?[]const u8 = null,
     indexes: ?[]const Index = null,
     unique: ?[]const []const u8 = null,
-    autoinc: ?[]const []const u8 = null,
+    autoinc: ?[]const [:0]const u8 = null,
 };
 
-pub const reducers: []const Reducer = blk: {
-    var temp: []const Reducer = &.{};
-    const root = @import("root");
-    for(@typeInfo(root).@"struct".decls) |decl| {
-        const field = @field(root, decl.name);
-        if(@TypeOf(@field(root, decl.name)) == Reducer) {
-            temp = temp ++ &[_]Reducer{ 
-                Reducer{
-                    .name = field.name orelse decl.name,
-                    .lifecycle = field.lifecycle,
-                    .params = field.params,
-                    .func = field.func,
-                    .func_type = field.func_type,
+pub const Table = struct {
+    name: []const u8,
+    schema: type,
+    attribs: TableAttribs = .{},
+};
+
+pub const Spec = struct {
+    tables: []const Table,
+    reducers: []const SpecReducer,
+    includes: []const Spec = &.{},
+};
+
+pub fn SpecBuilder(comptime spec: Spec) RawModuleDefV9 {
+    comptime {
+        //var moduleDef: RawModuleDefV9 = undefined;
+        var tableDefs: []const RawTableDefV9 = &[_]RawTableDefV9{};
+        var reducerDefs: []const RawReducerDefV9 = &[_]RawReducerDefV9{};
+
+        var raw_types: []const AlgebraicType = &[_]AlgebraicType{};
+        var types: []const RawTypeDefV9 = &[_]RawTypeDefV9{};
+
+        var structDecls: []const StructImpl = &[_]StructImpl{};
+
+        for(spec.tables) |table| {
+            const table_name: []const u8 = table.name;
+            const table_type: TableType = table.attribs.type;
+            const table_access: TableAccess = table.attribs.access;
+            const product_type_ref: AlgebraicTypeRef = AlgebraicTypeRef{
+                .inner = addStructImpl(&structDecls, table.schema),
+            };
+            const primary_key: []const u16 = blk: {
+                if(table.attribs.primary_key) |key| {
+                    const fieldIdx = std.meta.fieldIndex(table.schema, key);
+                    if(fieldIdx == null) {
+                        @compileLog(table.schema, key);
+                        @compileError("Primary Key `" ++ table_name ++ "." ++ key ++ "` does not exist in table schema `"++@typeName(table.schema)++"`!");
+                    }
+                    break :blk &[_]u16{ fieldIdx.?, };
+                }
+                break :blk &[_]u16{};
+            };
+
+            var indexes: []const RawIndexDefV9 = &[_]RawIndexDefV9{};
+            if(table.attribs.primary_key) |key| {
+                indexes = indexes ++ &[_]RawIndexDefV9{
+                    RawIndexDefV9{
+                        .name = null,
+                        .accessor_name = key,
+                        .algorithm = .{
+                            .BTree = &.{ 0 }
+                        }
+                    }
+                };
+            }
+            if(table.attribs.indexes) |_indexes| {
+                for(_indexes) |index| {
+
+                    const fieldIndex = std.meta.fieldIndex(table.schema, index.name).?;
+
+                    const indexAlgo: RawIndexAlgorithm = blk: {
+                        switch(index.layout) {
+                            .BTree => break :blk .{ .BTree = &.{ fieldIndex } },
+                            .Hash => break :blk .{ .Hash = &.{ fieldIndex } },
+                            .Direct => break :blk .{ .Direct = fieldIndex },
+                        }
+                    };
+
+                    indexes = indexes ++ &[_]RawIndexDefV9{
+                        RawIndexDefV9{
+                            .name = null,
+                            .accessor_name = index.name,
+                            .algorithm = indexAlgo
+                        }
+                    };
+                }
+            }
+
+            var constraints: []const RawConstraintDefV9 = &[_]RawConstraintDefV9{};
+            if(table.attribs.primary_key) |_| {
+                constraints = constraints ++ &[_]RawConstraintDefV9{
+                    RawConstraintDefV9{
+                        .name = null,
+                        .data = .{ .unique = .{ .Columns = &.{ primary_key[0] } } },
+                    }
+                };
+            }
+
+            const schedule: ?RawScheduleDefV9 = schedule_blk: {
+                if(table.attribs.schedule == null) break :schedule_blk null;
+                const column = column_blk: for(std.meta.fields(table.schema), 0..) |field, i| {
+                    if(field.type == ScheduleAt) break :column_blk i;
+                };
+                const resolvedReducer = blk: {
+                    for(spec.reducers) |reducer| {
+                        if(std.mem.eql(u8, reducer.name, table.attribs.schedule.?))
+                            break :blk reducer;
+                    }
+                    @compileError("Reducer of name `"++table.attribs.schedule.?++"` does not exist!");
+                };
+                break :schedule_blk RawScheduleDefV9{
+                    .name = table_name ++ "_sched",
+                    .reducer_name = resolvedReducer.name,
+                    .scheduled_at_column = column,
+                };
+            };
+
+            var sequences: []const RawSequenceDefV9 = &[_]RawSequenceDefV9{};
+            if(table.attribs.autoinc) |autoincs| {
+                for(autoincs) |autoinc| {
+                    sequences = sequences ++ &[_]RawSequenceDefV9{
+                        RawSequenceDefV9{
+                            .name =  table_name ++ "_" ++ autoinc ++ "_seq",
+                            .column = std.meta.fieldIndex(table.schema, autoinc).?,
+                            .start = null,
+                            .min_value = null,
+                            .max_value = null,
+                            .increment = 1,
+                        }
+                    };
+                }
+            }
+
+            tableDefs = tableDefs ++ &[1]RawTableDefV9{
+                .{
+                    .name = table_name,
+                    .product_type_ref = product_type_ref,
+                    .primary_key = primary_key,
+                    .indexes = indexes,
+                    .constraints = constraints,
+                    .sequences = sequences,
+                    .schedule = schedule,
+                    .table_type = table_type,
+                    .table_access = table_access,
                 }
             };
         }
-    }
-    break :blk temp;
-};
 
-pub const tables: []const Table = blk: {
-    var temp: []const Table = &.{};
-    const root = @import("root");
-    for(@typeInfo(root).@"struct".decls) |decl| {
-        const field = @field(root, decl.name);
-        if(@TypeOf(@field(root, decl.name)) == Table) {
-            temp = temp ++ &[_]Table{ 
-                Table{
-                    .type = field.type,
-                    .access = field.access,
-                    .schema = field.schema,
-                    .name = field.name orelse decl.name,
-                    .primary_key = field.primary_key,
-                    .schedule_reducer = field.schedule_reducer,
-                    .indexes = field.indexes,
-                    .autoinc = field.autoinc,
-                    .unique = field.unique,
+        @setEvalBranchQuota(structDecls.len * 100);
+        for(structDecls) |structDecl| {
+            var product_elements: []const ProductTypeElement = &[_]ProductTypeElement{};
+
+            for(structDecl.fields) |field|
+            {
+                product_elements = product_elements ++ &[_]ProductTypeElement{
+                    .{
+                        .name = field.name,
+                        .algebraic_type = field.type,
+                    }
+                };
+            }
+
+            raw_types = raw_types ++ &[_]AlgebraicType{
+                .{
+                    .Product = .{
+                        .elements = product_elements,
+                    }
+                },
+            };
+
+            types = types ++ &[_]RawTypeDefV9{
+                .{
+                    .name = .{
+                        .scope = &[_][]u8{},
+                        .name = structDecl.name
+                    },
+                    .ty = .{ .inner = raw_types.len-1, },
+                    .custom_ordering = true,
                 }
             };
         }
+
+        for(spec.reducers) |reducer| {
+            const name: []const u8 = reducer.name;
+            const lifecycle: Lifecycle = reducer.lifecycle;
+            
+            var params: []const ProductTypeElement = &[_]ProductTypeElement{};
+            const param_names = reducer.params;
+
+            for(@typeInfo(reducer.func_type).@"fn".params[1..], param_names) |param, param_name| {
+                params = params ++ &[_]ProductTypeElement{
+                    .{
+                        .name = param_name,
+                        .algebraic_type = getStructImplOrType(structDecls, param.type.?),
+                    }
+                };
+            }
+
+            reducerDefs = reducerDefs ++ &[_]RawReducerDefV9{
+                .{
+                    .name = name,
+                    .params = .{ .elements = params },
+                    .lifecycle = lifecycle,
+                },
+            };
+        }
+
+        return .{
+            .typespace = .{
+                .types = raw_types,
+            },
+            .tables = tableDefs,
+            .reducers = reducerDefs,
+            .types = types,
+            .misc_exports = &[_]RawMiscModuleExportV9{},
+            .row_level_security = &[_]RawRowLevelSecurityDefV9{},
+        };
     }
-    break :blk temp;
-};
+}
+
+pub const globalSpec: Spec = blk: {
+    const root = @import("root");
+    for(@typeInfo(root).@"struct".decls) |decl| {
+        const field = @field(root, decl.name);
+        if(@TypeOf(field) == Spec) {
+            break :blk field;
+        }
+    }
+    @compileError("No spacetime spec found in root file!");
+}; 
 
 pub export fn __describe_module__(description: BytesSink) void {
     const allocator = std.heap.wasm_allocator;
@@ -751,13 +804,7 @@ pub export fn __describe_module__(description: BytesSink) void {
     var moduleDefBytes = std.ArrayList(u8).init(allocator);
     defer moduleDefBytes.deinit();
 
-    const compiledModule = comptime compile(tables, reducers) catch |err| {
-        var buf: [1024]u8 = undefined;
-        const fmterr = std.fmt.bufPrint(&buf, "Error: {}", .{err}) catch {
-            @compileError("ERROR2: No Space Left! Expand error buffer size!");
-        };
-        @compileError(fmterr);
-    };
+    const compiledModule = comptime SpecBuilder(globalSpec);
 
     //PrintModule(compiledModule);
 
@@ -793,6 +840,18 @@ pub export fn __call_reducer__(
             .allocator = allocator,
         },
     };
+
+    const spec: Spec = blk: {
+        const root = @import("root");
+        inline for(@typeInfo(root).@"struct".decls) |decl| {
+            const field = @field(root, decl.name);
+            if(@TypeOf(field) == Spec) {
+                break :blk field;
+            }
+        }
+    };
+
+    const reducers = spec.reducers;
 
     inline for(reducers, 0..) |reducer, i| {
         if(id == i) {
@@ -849,7 +908,7 @@ pub export fn __call_reducer__(
             }
 
             callReducer(reducers, i, constructedArg) catch |errRet| {
-                std.log.debug("{s}", .{@errorName(errRet)});
+                std.log.err("{s}", .{@errorName(errRet)});
                 if (@errorReturnTrace()) |trace| {
                     std.debug.dumpStackTrace(trace.*);
                 }

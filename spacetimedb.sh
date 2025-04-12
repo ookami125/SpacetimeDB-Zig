@@ -5,9 +5,9 @@ shift;
 
 if [[ "$func" == "publish" ]]; then
     zig build -freference-trace=100 || exit 1
-    spacetime logout
+    #spacetime logout
     spacetime login --server-issued-login local
-    spacetime publish -y --server local --bin-path=zig-out/bin/stdb-zig-helloworld.wasm
+    spacetime publish -y --server local --bin-path=zig-out/bin/blackholio.wasm blackholio
     DB_HASH=$(spacetime list 2>/dev/null | tail -1)
     spacetime logs $DB_HASH
     exit $?

@@ -153,9 +153,18 @@ fn serialize_raw_constraint_def_v9(array: *std.ArrayList(u8), val: RawConstraint
 }
 
 fn serialize_raw_sequence_def_v9(array: *std.ArrayList(u8), val: RawSequenceDefV9) !void {
-    _ = array;
-    _ = val;
-    unreachable;
+    try array.appendSlice(&[_]u8{ @intFromBool(val.name == null) });
+    if(val.name) |name| {
+        try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(name.len))));
+        try array.appendSlice(name);
+    }
+    try array.appendSlice(&std.mem.toBytes(@as(u16, @intCast(val.column))));
+    try array.appendSlice(&[_]u8{ @intFromBool(val.start == null) });
+    try array.appendSlice(&[_]u8{ @intFromBool(val.min_value == null) });
+    if(val.min_value != null) undefined;
+    try array.appendSlice(&[_]u8{ @intFromBool(val.max_value == null) });
+    if(val.max_value != null) undefined;
+    try array.appendSlice(&std.mem.toBytes(@as(i128, @intCast(val.increment))));
 }
 
 fn serialize_raw_schedule_def_v9(array: *std.ArrayList(u8), val: RawScheduleDefV9) !void {
