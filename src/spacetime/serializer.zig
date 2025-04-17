@@ -109,9 +109,8 @@ fn serialize_raw_misc_module_export_v9(array: *std.ArrayList(u8), val: RawMiscMo
 }
 
 fn serialize_raw_row_level_security_def_v9(array: *std.ArrayList(u8), val: RawRowLevelSecurityDefV9) !void {
-    _ = array;
-    _ = val;
-    unreachable;
+    try array.appendSlice(&std.mem.toBytes(@as(u32, @intCast(val.sql.len))));
+    try array.appendSlice(val.sql);
 }
 
 fn serialize_raw_index_algorithm(array: *std.ArrayList(u8), val: RawIndexAlgorithm) !void {

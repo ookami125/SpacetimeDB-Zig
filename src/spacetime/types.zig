@@ -302,7 +302,6 @@ pub fn StructDeserializer(struct_type: type) fn(allocator: std.mem.Allocator, *[
                     i8, u8, i16, u16, i32, u32,
                     i64, u64, i128, u128, i256, u256,
                     f32, f64  => {
-                        //std.log.debug("field_type: {} (offset_mem.len: {})", .{field.type, offset_mem.len});
                         @field(ret, field.name) = std.mem.bytesAsValue(field.type, offset_mem[0..@sizeOf(field.type)]).*;
                         offset_mem = offset_mem[@sizeOf(field.type)..];
                     },
@@ -341,44 +340,74 @@ pub fn Iter(struct_type: type) type {
     return struct {
         allocator: std.mem.Allocator,
         handle: spacetime.RowIter,
-        buffer: [0x5_000]u8 = undefined,
-        contents: ?[]u8 = null,
+        buffer: []u8,
+        contents: []u8,
         last_ret: SpacetimeValue = .OK,
+        inited: bool = false,
         
+        pub fn init(allocator: std.mem.Allocator, rowIter: spacetime.RowIter) !@This() {
+            const buffer = try allocator.alloc(u8, 0x20_000);
+            return .{
+                .allocator = allocator,
+                .handle = rowIter,
+                .buffer = buffer,
+                .contents = buffer[0..0],
+                .inited = true,
+            };
+        }
+
         pub fn next(self: *@This()) spacetime.ReducerError!?struct_type {
             var buffer_len: usize = undefined;
             var ret: spacetime.SpacetimeValue = self.last_ret;
-            if(self.contents == null or self.contents.?.len == 0) {
-                if(self.handle._inner == spacetime.RowIter.INVALID._inner) {
-                    self.contents = null;
+            blk: while(true) {
+                if(self.contents.len == 0) {
+                    if(self.handle._inner == spacetime.RowIter.INVALID._inner) {
+                        return null;
+                    }
+
+                    buffer_len = self.buffer.len;
+                    ret = spacetime.retMap(spacetime.row_iter_bsatn_advance(self.handle, self.buffer.ptr, &buffer_len)) catch |err| {
+                        switch(err) {
+                            SpacetimeError.BUFFER_TOO_SMALL => {
+                                self.buffer = try self.allocator.realloc(self.buffer, buffer_len);
+                                continue :blk;
+                            },
+                            SpacetimeError.NO_SUCH_ITER => {
+                                return SpacetimeError.NO_SUCH_ITER;
+                            },
+                            else => {
+                                return SpacetimeError.UNKNOWN;
+                            }
+                        }
+                    };
+                    
+                    self.contents = self.buffer[0..buffer_len];
+                    
+                    if(ret == .EXHAUSTED) {
+                        self.handle = spacetime.RowIter.INVALID;
+                    }
+                    self.last_ret = ret;
+                }
+                if(self.contents.len == 0) {
                     return null;
                 }
-
-                buffer_len = self.buffer.len;
-                ret = try spacetime.retMap(spacetime.row_iter_bsatn_advance(self.handle, @constCast(@ptrCast(&self.buffer)), &buffer_len));
-                self.contents = self.buffer[0..buffer_len];
                 
-                if(ret == .EXHAUSTED) {
-                    self.handle = spacetime.RowIter.INVALID;
-                }
-                self.last_ret = ret;
-            }
-            if(self.contents == null or self.contents.?.len == 0) {
-                return null;
-            }
+                var offset = self.contents;
+                const retValue = try StructDeserializer(struct_type)(self.allocator, &offset);
+                self.contents = offset;
 
-            return try StructDeserializer(struct_type)(self.allocator, &(self.contents.?));
-        }
-
-        pub fn one_or_null(self: *@This()) ?struct_type {
-            defer self.close();
-            return self.next() catch null;
+                return retValue;
+            }
         }
 
         pub fn close(self: *@This()) void {
-            _ = spacetime.row_iter_bsatn_close(self.handle);
-            self.handle = spacetime.RowIter.INVALID;
-            self.contents = null;
+            if (self.handle.invalid())
+            {
+                _ = spacetime.row_iter_bsatn_close(self.handle);
+                self.handle = spacetime.RowIter.INVALID;
+            }
+            self.contents = undefined;
+            self.allocator.free(self.buffer);
         }
     };
 }
@@ -429,9 +458,9 @@ pub fn Column2ORM(comptime table_name: []const u8, comptime column_name: [:0]con
             };
 
             const size: usize = getStructSize(nVal);
-            const mem = try self.allocator.alloc(u8, size);
-            var offset_mem = mem;
+            const mem = try self.allocator.alignedAlloc(u8, 1, size);
             defer self.allocator.free(mem);
+            var offset_mem = mem;
             getStructData(nVal, &offset_mem);
 
             const data = mem[0..size];
@@ -449,15 +478,12 @@ pub fn Column2ORM(comptime table_name: []const u8, comptime column_name: [:0]con
                 &rowIter
             ));
 
-            return Iter(struct_type){
-                .allocator = self.allocator,
-                .handle = rowIter,
-            };
+            return Iter(struct_type).init(self.allocator, rowIter);
         }
 
         pub fn find(self: @This(), val: wrapped_type) !?struct_type {
             var iter = try self.filter(val);
-            return iter.one_or_null();
+            return try iter.next();
         }
 
         pub fn delete(self: @This(), val: wrapped_type) !void {
@@ -472,8 +498,8 @@ pub fn Column2ORM(comptime table_name: []const u8, comptime column_name: [:0]con
 
             const size: usize = getStructSize(nVal);
             const mem = try self.allocator.alloc(u8, size);
-            var offset_mem = mem;
             defer self.allocator.free(mem);
+            var offset_mem = mem;
             getStructData(nVal, &offset_mem);
 
             const data = mem[0..size];
@@ -502,8 +528,8 @@ pub fn Column2ORM(comptime table_name: []const u8, comptime column_name: [:0]con
 
             const size: usize = getStructSize(val);
             const mem = try self.allocator.alloc(u8, size);
-            var offset_mem = mem;
             defer self.allocator.free(mem);
+            var offset_mem = mem;
             getStructData(val, &offset_mem);
 
             const data = mem[0..size];
@@ -579,15 +605,12 @@ pub fn Table2ORM(comptime table_name: []const u8) type {
             return data_copy;
         }
 
-        pub fn iter(self: @This()) Iter(struct_type) {
+        pub fn iter(self: @This()) !Iter(struct_type) {
             var id: TableId = undefined;
             _ = spacetime.table_id_from_name(table_name.ptr, table_name.len, &id);
             var rowIter: spacetime.RowIter = undefined;
             _ = spacetime.datastore_table_scan_bsatn(id, &rowIter);
-            return Iter(struct_type){
-                .allocator = self.allocator,
-                .handle = rowIter,
-            };
+            return Iter(struct_type).init(self.allocator, rowIter);
         }
 
         pub fn col(self: @This(), comptime column_name: [:0]const u8) Column2ORM(table_name, column_name) {
@@ -609,15 +632,17 @@ pub fn Table2ORM(comptime table_name: []const u8) type {
 
 pub const Local = struct {
     allocator: std.mem.Allocator,
+    frame_allocator: std.mem.Allocator,
 
     pub fn get(self: @This(), comptime table: []const u8) Table2ORM(table) {
         return .{
-            .allocator = self.allocator,
+            .allocator = self.frame_allocator,
         };
     }
 };
 
 pub const ReducerContext = struct {
+    allocator: std.mem.Allocator,
     sender: spacetime.Identity,
     timestamp: spacetime.Timestamp,
     connection_id: spacetime.ConnectionId,
@@ -648,7 +673,7 @@ pub const RawMiscModuleExportV9 = enum {
     RESERVED,
 };
 
-pub const RawSql = []u8;
+pub const RawSql = Str;
 
 pub const RawRowLevelSecurityDefV9 = struct {
     sql: RawSql,

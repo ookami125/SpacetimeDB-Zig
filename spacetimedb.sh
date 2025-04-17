@@ -9,7 +9,7 @@ if [[ "$func" == "publish" ]]; then
     spacetime login --server-issued-login local
     spacetime publish -y --server local --bin-path=zig-out/bin/blackholio.wasm blackholio
     DB_HASH=$(spacetime list 2>/dev/null | tail -1)
-    spacetime logs $DB_HASH
+    spacetime logs $DB_HASH -n 15
     exit $?
 fi
 

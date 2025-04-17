@@ -188,6 +188,9 @@ pub const spacespec = spacetime.Spec{
             .params = &.{ "_timer", },
         })
     },
+    .row_level_security = &.{
+        "SELECT * FROM logged_out_player WHERE identity = :sender"
+    }
 };
 
 pub const DbVector2 = struct {
@@ -356,6 +359,7 @@ pub fn disconnect(ctx: *spacetime.ReducerContext) !void {
 
     // Remove any circles from the arena
     var iter = try ctx.db.get("circle").col("player_id").filter(.{ .player_id = player.player_id });
+    defer iter.close();
     while (try iter.next()) |circle_val| {
         try ctx.db.get("entity").col("entity_id").delete(.{ .entity_id = circle_val.entity_id, });
         try ctx.db.get("circle").col("entity_id").delete(.{ .entity_id = circle_val.entity_id, });
@@ -435,6 +439,7 @@ pub fn suicide(ctx: *spacetime.ReducerContext) !void {
         .find(.{ .identity = ctx.sender})).?;
 
     var circles = try ctx.db.get("circle").col("player_id").filter(.{ .player_id = player.player_id});
+    defer circles.close();
 
     while(try circles.next()) |circle|  {
         try destroy_entity(ctx, circle.entity_id);
@@ -450,6 +455,7 @@ pub fn update_player_input(ctx: *spacetime.ReducerContext, direction: DbVector2)
         .col("identity")
         .find(.{ .identity = ctx.sender})).?;
     var circles = try ctx.db.get("circle").col("player_id").filter(.{ .player_id = player.player_id});
+    defer circles.close();
     while(try circles.next()) |circle| {
         var copy_circle = circle;
         copy_circle.direction = direction.normalized();
@@ -491,22 +497,26 @@ pub fn move_all_players(ctx: *spacetime.ReducerContext, _timer: MoveAllPlayersTi
         .db.get("config").col("id")
         .find(.{ .id = 0 })).?.world_size;
     
-    var circle_directions = std.AutoHashMap(u32, DbVector2).init(ctx.db.allocator);
-    var circleIter = ctx.db.get("circle").iter();
+    var circle_directions = std.AutoHashMap(u32, DbVector2).init(ctx.allocator);
+    var circleIter = try ctx.db.get("circle").iter();
+    defer circleIter.close();
     while(try circleIter.next()) |circle| {
         try circle_directions.put(circle.entity_id, circle.direction.scale(circle.speed));
     }
 
-    var playerIter = ctx.db.get("player").iter();
+    var playerIter = try ctx.db.get("player").iter();
+    defer playerIter.close();
+
     while(try playerIter.next()) |player|  {
-        var circles = std.ArrayList(Circle).init(ctx.db.allocator);
+        var circles = std.ArrayList(Circle).init(ctx.allocator);
         var circlesIter1 = try ctx.db.get("circle").col("player_id")
             .filter(.{ .player_id = player.player_id});
+        defer circlesIter1.close();
         while(try circlesIter1.next()) |circle| {
             try circles.append(circle);
         }
 
-        var player_entities = std.ArrayList(Entity).init(ctx.db.allocator);
+        var player_entities = std.ArrayList(Entity).init(ctx.allocator);
         for(circles.items) |c| {
             try player_entities.append((try ctx.db.get("entity").col("entity_id").find(.{ .entity_id = c.entity_id})).?);
         }
@@ -575,7 +585,8 @@ pub fn move_all_players(ctx: *spacetime.ReducerContext, _timer: MoveAllPlayersTi
         }
     }
 
-    var circleIter2 = ctx.db.get("circle").iter();
+    var circleIter2 = try ctx.db.get("circle").iter();
+    defer circleIter2.close();
     while(try circleIter2.next()) |circle| {
         const circle_entity_n = (ctx.db.get("entity").col("entity_id").find(.{ .entity_id = circle.entity_id }) catch {
             continue;
@@ -586,22 +597,24 @@ pub fn move_all_players(ctx: *spacetime.ReducerContext, _timer: MoveAllPlayersTi
         const new_pos = circle_entity.position.add(direction.scale(mass_to_max_move_speed(circle_entity.mass)));
         const min = circle_radius;
         const max = @as(f32, @floatFromInt(world_size)) - circle_radius;
+        if(max < min) continue;
         circle_entity.position.x = std.math.clamp(new_pos.x, min, max);
         circle_entity.position.y = std.math.clamp(new_pos.y, min, max);
         try ctx.db.get("entity").col("entity_id").update(circle_entity);
     }
 
     // Check collisions
-    var entities = std.AutoHashMap(u32, Entity).init(ctx.db.allocator);
-    var entitiesIter = ctx.db.get("entity").iter();
+    var entities = std.AutoHashMap(u32, Entity).init(ctx.allocator);
+    var entitiesIter = try ctx.db.get("entity").iter();
+    defer entitiesIter.close();
     while(try entitiesIter.next()) |e| {
         try entities.put(e.entity_id, e);
     }
-    var circleIter3 = ctx.db.get("circle").iter();
+    var circleIter3 = try ctx.db.get("circle").iter();
+    defer circleIter3.close();
     while(try circleIter3.next()) |circle| {
         // let span = spacetimedb::time_span::Span::start("collisions");
         var circle_entity = entities.get(circle.entity_id).?;
-        _ = &circle_entity;
         var entityIter = entities.iterator();
         while (entityIter.next()) |other_entity| {
             if(other_entity.value_ptr.entity_id == circle_entity.entity_id) {
@@ -670,12 +683,13 @@ pub fn player_split(ctx: *spacetime.ReducerContext) !void {
     const player = (try ctx
         .db.get("player").col("identity")
         .find(.{ .identity = ctx.sender})).?;
-    var circles = std.ArrayList(Circle).init(ctx.db.allocator);
+    var circles = std.ArrayList(Circle).init(ctx.allocator);
     var circlesIter = try ctx
         .db
         .get("circle")
         .col("player_id")
         .filter(.{ .player_id = player.player_id});
+    defer circlesIter.close();
     while(try circlesIter.next()) |circle| {
         try circles.append(circle);
     }
@@ -756,7 +770,8 @@ pub fn spawn_food(ctx: *spacetime.ReducerContext, _: SpawnFoodTimer) !void {
 }
 
 pub fn circle_decay(ctx: *spacetime.ReducerContext, _: CircleDecayTimer) !void {
-    var circleIter = ctx.db.get("circle").iter();
+    var circleIter = try ctx.db.get("circle").iter();
+    defer circleIter.close();
     while(try circleIter.next()) |circle| {
         var circle_entity = (try ctx
             .db
@@ -779,7 +794,6 @@ pub fn calculate_center_of_mass(entities: []const Entity) DbVector2 {
         }
         break :blk sum;
     };
-    //entities.iter().map(|e| e.position * e.mass as f32).sum();
     const center_of_mass: DbVector2 = blk: {
         var sum: DbVector2 = 0;
         for(entities) |entity| {
@@ -792,16 +806,17 @@ pub fn calculate_center_of_mass(entities: []const Entity) DbVector2 {
 }
 
 pub fn circle_recombine(ctx: *spacetime.ReducerContext, timer: CircleRecombineTimer) !void {
-    var circles = std.ArrayList(Circle).init(ctx.db.allocator);
+    var circles = std.ArrayList(Circle).init(ctx.allocator);
     var circlesIter = try ctx
         .db
         .get("circle")
         .col("player_id")
         .filter(.{ .player_id = timer.player_id });
+    defer circlesIter.close();
     while(try circlesIter.next()) |circle| {
         try circles.append(circle);
     }
-    var recombining_entities = std.ArrayList(Entity).init(ctx.db.allocator);
+    var recombining_entities = std.ArrayList(Entity).init(ctx.allocator);
     for(circles.items) |circle| {
         if(@as(f32, @floatFromInt(ctx.timestamp.__timestamp_micros_since_unix_epoch__ - circle.last_split_time.__timestamp_micros_since_unix_epoch__)) >= SPLIT_RECOMBINE_DELAY_SEC) {
             const entity = (try ctx.db

@@ -64,7 +64,13 @@ pub fn logFn(comptime level: std.log.Level, comptime _: @TypeOf(.enum_literal), 
 pub const BytesSink = extern struct { inner: u32 };
 pub const BytesSource = extern struct { inner: u32 };
 pub const TableId = extern struct { _inner: u32, };
-pub const RowIter = extern struct { _inner: u32, pub const INVALID = RowIter{ ._inner = 0}; };
+pub const RowIter = extern struct {
+    _inner: u32,
+    pub const INVALID = RowIter{ ._inner = 0};
+    pub fn invalid(self: @This()) bool {
+        return self._inner == 0;
+    }
+};
 pub const IndexId = extern struct{ _inner: u32 };
 pub const ColId = extern struct { _inner: u16 };
 
@@ -121,6 +127,7 @@ pub const SpacetimeValue = enum(u1) {
 };
 
 pub const SpacetimeError = error {
+    UNKNOWN,
     HOST_CALL_FAILURE,
     NOT_IN_TRANSACTION,
     BSATN_DECODE_ERROR,
@@ -586,6 +593,7 @@ pub const Table = struct {
 pub const Spec = struct {
     tables: []const Table,
     reducers: []const SpecReducer,
+    row_level_security: []const []const u8,
     includes: []const Spec = &.{},
 };
 
@@ -597,6 +605,8 @@ pub fn SpecBuilder(comptime spec: Spec) RawModuleDefV9 {
 
         var raw_types: []const AlgebraicType = &[_]AlgebraicType{};
         var types: []const RawTypeDefV9 = &[_]RawTypeDefV9{};
+
+        var row_level_security: []const RawRowLevelSecurityDefV9 = &[_]RawRowLevelSecurityDefV9{};
 
         var structDecls: []const StructImpl = &[_]StructImpl{};
 
@@ -773,6 +783,14 @@ pub fn SpecBuilder(comptime spec: Spec) RawModuleDefV9 {
             };
         }
 
+        for(spec.row_level_security) |rls| {
+            row_level_security = row_level_security ++ &[_]RawRowLevelSecurityDefV9{
+                RawRowLevelSecurityDefV9{
+                    .sql = rls,
+                }
+            };
+        }
+
         return .{
             .typespace = .{
                 .types = raw_types,
@@ -781,7 +799,7 @@ pub fn SpecBuilder(comptime spec: Spec) RawModuleDefV9 {
             .reducers = reducerDefs,
             .types = types,
             .misc_exports = &[_]RawMiscModuleExportV9{},
-            .row_level_security = &[_]RawRowLevelSecurityDefV9{},
+            .row_level_security = row_level_security,
         };
     }
 }
@@ -830,14 +848,19 @@ pub export fn __call_reducer__(
 ) i16 {
     _ = err;
 
-    const allocator = std.heap.wasm_allocator;
+    const backend_allocator = std.heap.wasm_allocator;
+    var arena_allocator = std.heap.ArenaAllocator.init(backend_allocator);
+    defer arena_allocator.deinit();
+    const allocator = arena_allocator.allocator();
     
     var ctx: ReducerContext = .{
+        .allocator = allocator,
         .sender = std.mem.bytesAsValue(Identity, std.mem.sliceAsBytes(&[_]u64{ sender_0, sender_1, sender_2, sender_3})).*,
         .timestamp = Timestamp{ .__timestamp_micros_since_unix_epoch__ = @intCast(timestamp), },
         .connection_id  = std.mem.bytesAsValue(ConnectionId, std.mem.sliceAsBytes(&[_]u64{ conn_id_0, conn_id_1})).*,
         .db = .{
-            .allocator = allocator,
+            .allocator = backend_allocator,
+            .frame_allocator = allocator,
         },
     };
 
