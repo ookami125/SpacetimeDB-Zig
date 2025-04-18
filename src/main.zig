@@ -1,3 +1,6 @@
+// Copyright 2025 Clockwork Labs, Licensed under Apache-2.0
+// Copyright 2025 Tyler Peterson, Licensed under Apache-2.0
+
 const std = @import("std");
 const spacetime = @import("spacetime.zig");
 comptime { _ = spacetime; }

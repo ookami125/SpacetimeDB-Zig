@@ -1,3 +1,5 @@
+// Copyright 2025 Tyler Peterson, Licensed under MPL-2.0
+
 const spacetime = @import("../spacetime.zig");
 
 const BytesSink = spacetime.BytesSink;

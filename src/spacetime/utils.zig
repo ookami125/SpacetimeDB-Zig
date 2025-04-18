@@ -1,3 +1,5 @@
+// Copyright 2025 Tyler Peterson, Licensed under MPL-2.0
+
 const std = @import("std");
 
 pub fn getMemberDefaultType(t: type, comptime member: []const u8) type {

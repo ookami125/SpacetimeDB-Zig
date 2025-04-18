@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright 2025 Tyler Peterson, Licensed under MPL-2.0
+
 DB_HASH=$(spacetime list 2>/dev/null | tail -1)
 func=$1;
 shift;
