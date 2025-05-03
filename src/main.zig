@@ -5,6 +5,10 @@ const std = @import("std");
 const spacetime = @import("spacetime.zig");
 comptime { _ = spacetime; }
 
+const stdb_math = @import("spacetime/math.zig");
+const DbVector2 = stdb_math.DbVector2;
+const DbVector3 = stdb_math.DbVector3;
+
 const START_PLAYER_MASS: u32 = 15;
 const START_PLAYER_SPEED: u32 = 10;
 const FOOD_MASS_MIN: u32 = 2;
@@ -194,59 +198,6 @@ pub const spacespec = spacetime.Spec{
     .row_level_security = &.{
         "SELECT * FROM logged_out_player WHERE identity = :sender"
     }
-};
-
-pub const DbVector2 = struct {
-    x: f32,
-    y: f32,
-
-    pub fn sqr_magnitude(self: @This()) f32 {
-        return self.x * self.x + self.y * self.y;
-    }
-
-    pub fn magnitude(self: @This()) f32 {
-        return @sqrt(self.sqr_magnitude());
-    }
-
-    pub fn normalized(self: @This()) DbVector2 {
-        const length = self.magnitude();
-        return .{
-            .x = self.x / length,
-            .y = self.y / length,
-        };
-    }
-
-    pub fn scale(self: @This(), val: f32) DbVector2 {
-        return .{
-            .x = self.x * val,
-            .y = self.y * val,
-        };
-    }
-
-    pub fn add(self: @This(), other: DbVector2) DbVector2 {
-        return .{
-            .x = self.x + other.x,
-            .y = self.y + other.y,
-        };
-    }
-
-    pub fn add_to(self: *@This(), other: DbVector2) void {
-        self.x += other.x;
-        self.y += other.y;
-    }
-
-    pub fn sub(self: @This(), other: DbVector2) DbVector2 {
-        return .{
-            .x = self.x - other.x,
-            .y = self.y - other.y,
-        };
-    }
-
-    pub fn sub_from(self: *@This(), other: DbVector2) void {
-        self.x -= other.x;
-        self.y -= other.y;
-    }
-
 };
 
 pub const Config = struct {

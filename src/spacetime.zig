@@ -255,7 +255,7 @@ pub fn readArg(allocator: std.mem.Allocator, args: BytesSource, comptime t: type
             const string_buf = try allocator.alloc(u8, len);
             return try read_bytes_source(args, string_buf);
         },
-        i8, u8, i16, u16, i32, u32,
+        bool, i8, u8, i16, u16, i32, u32,
         i64, u64, i128, u128, i256, u256,
         f32, f64 => {
             const read_type = t;
@@ -299,6 +299,7 @@ pub fn zigTypeToSpacetimeType(comptime param: ?type) AlgebraicType {
     if(param == null) @compileError("Null parameter type passed to zigParamsToSpacetimeParams");
     return switch(param.?) {
         []const u8 => .{ .String = {} },
+        bool => .{ .Bool = {}, }, 
         i32 => .{ .I32 = {}, },
         i64 => .{ .I64 = {}, },
         i128 => .{ .I128 = {}, },
@@ -597,6 +598,30 @@ pub const Spec = struct {
     reducers: []const SpecReducer,
     row_level_security: []const []const u8,
     includes: []const Spec = &.{},
+
+    pub fn getAllTable(self: @This()) []const Table {
+        var tables: []const Table = self.tables;
+        for(self.includes) |include| {
+            tables = tables ++ include.getAllTable();
+        }
+        return tables;
+    }
+
+    pub fn getAllReducers(self: @This()) []const SpecReducer {
+        var reducers: []const SpecReducer = self.reducers;
+        for(self.includes) |include| {
+            reducers = reducers ++ include.getAllReducers();
+        }
+        return reducers;
+    }
+
+    pub fn getAllRLS(self: @This()) []const []const u8 {
+        var row_level_security: []const []const u8 = self.row_level_security;
+        for(self.includes) |include| {
+            row_level_security = row_level_security ++ include.getAllRLS();
+        }
+        return row_level_security;
+    }
 };
 
 pub fn SpecBuilder(comptime spec: Spec) RawModuleDefV9 {
@@ -612,7 +637,7 @@ pub fn SpecBuilder(comptime spec: Spec) RawModuleDefV9 {
 
         var structDecls: []const StructImpl = &[_]StructImpl{};
 
-        for(spec.tables) |table| {
+        for(spec.getAllTable()) |table| {
             const table_name: []const u8 = table.name;
             const table_type: TableType = table.attribs.type;
             const table_access: TableAccess = table.attribs.access;
@@ -760,7 +785,7 @@ pub fn SpecBuilder(comptime spec: Spec) RawModuleDefV9 {
             };
         }
 
-        for(spec.reducers) |reducer| {
+        for(spec.getAllReducers()) |reducer| {
             const name: []const u8 = reducer.name;
             const lifecycle: Lifecycle = reducer.lifecycle;
             
