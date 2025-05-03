@@ -8,6 +8,7 @@ comptime { _ = spacetime; }
 const stdb_math = @import("spacetime/math.zig");
 const DbVector2 = stdb_math.DbVector2;
 const DbVector3 = stdb_math.DbVector3;
+const ScheduleAt = spacetime.ScheduleAt;
 
 const START_PLAYER_MASS: u32 = 15;
 const START_PLAYER_SPEED: u32 = 10;
@@ -270,15 +271,15 @@ pub fn init(ctx: *spacetime.ReducerContext) !void {
     });
     _ = try ctx.db.get("circle_decay_timer").insert(CircleDecayTimer {
         .scheduled_id = 0,
-        .scheduled_at = .{ .Interval = .{ .__time_duration_micros__ = 5 * std.time.us_per_s }},
+        .scheduled_at = ScheduleAt.interval(5, .Seconds),
     });
     _ = try ctx.db.get("spawn_food_timer").insert(SpawnFoodTimer {
         .scheduled_id = 0,
-        .scheduled_at = .{ .Interval = .{ .__time_duration_micros__ = 500 * std.time.us_per_ms }}
+        .scheduled_at = ScheduleAt.interval(500, .Milliseconds),
     });
     _ = try ctx.db.get("move_all_players_timer").insert(MoveAllPlayersTimer {
        .scheduled_id = 0,
-       .scheduled_at = .{ .Interval = .{ .__time_duration_micros__ = 50 * std.time.us_per_ms }}
+       .scheduled_at = ScheduleAt.interval(50, .Milliseconds),
     });
 }
 

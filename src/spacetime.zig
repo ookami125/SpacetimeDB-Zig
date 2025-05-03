@@ -91,15 +91,31 @@ pub const Timestamp = struct {
 };
 
 pub const TimeUnit = enum {
+    Minutes,
     Seconds,
+    Milliseconds,
+    Microseconds,
 };
 
 pub const TimeDuration = struct {
     __time_duration_micros__: i64,
 
     pub fn as_f32(self: @This(), unit: TimeUnit) f32 {
+        const micros: f32 = @floatFromInt(self.__time_duration_micros__);
         return switch(unit) {
-            .Seconds => @as(f32, @floatFromInt(self.__time_duration_micros__)) / std.time.us_per_s,
+            .Minutes => micros / std.time.us_per_min,
+            .Seconds => micros / std.time.us_per_s,
+            .Milliseconds => micros / std.time.us_per_ms,
+            .Microseconds => micros,
+        };
+    }
+
+    pub fn create(time: f32, unit: TimeUnit) TimeDuration {
+        return switch(unit) {
+            .Minutes => .{ .__time_duration_micros__ = time * std.time.us_per_min},
+            .Seconds => .{ .__time_duration_micros__ = time * std.time.us_per_s},
+            .Milliseconds => .{ .__time_duration_micros__ = time * std.time.us_per_ms},
+            .Microseconds => .{ .__time_duration_micros__ = time }
         };
     }
 };
@@ -115,6 +131,12 @@ pub const ScheduleAt = union(enum){
                     ctx.timestamp.__timestamp_micros_since_unix_epoch__ +
                     @as(i64, @intFromFloat(secs * std.time.us_per_s)),
             }
+        };
+    }
+
+    pub fn interval(time: f32, unit: TimeUnit) ScheduleAt {
+        return .{
+            .Interval = TimeDuration.create(time, unit),
         };
     }
 };
